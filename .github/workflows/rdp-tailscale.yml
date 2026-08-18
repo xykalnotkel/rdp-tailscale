@@ -134,6 +134,6 @@ jobs:
         shell: powershell
         run: |
           while ($true) {
-            Write-Host "$(Get-Date -Format u) — masih hidup | IP: $env:TS_IP"
+            Write-Host "$(Get-Date -Format u) - masih hidup | IP: $env:TS_IP"
             Start-Sleep -Seconds 300
           }
