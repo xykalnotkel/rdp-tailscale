@@ -48,8 +48,14 @@ jobs:
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
           Start-Process -Wait -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList "/quiet"
-          Start-Sleep -Seconds 3
-          Get-Service tailscaled | Format-Table Status, Name -AutoSize
+          Start-Sleep -Seconds 5
+          # Di Windows nama service-nya "Tailscale" (bukan "tailscaled" seperti di Linux)
+          Get-Service Tailscale | Format-Table Status, Name -AutoSize
+          if (-not (Get-Service Tailscale -ErrorAction SilentlyContinue)) {
+            Write-Host "Service Tailscale tidak ditemukan. Daftar service terkait:"
+            Get-Service | Where-Object { $_.Name -like '*tail*' } | Format-Table Status, Name -AutoSize
+            exit 1
+          }
 
       # ------------------------------------------------------
       # 3. Login Tailscale — KLIK LINK YANG MUNCUL DI LOG
