@@ -123,9 +123,9 @@ jobs:
           Write-Host "  Password     : $env:RDP_PASS"
           Write-Host "======================================================"
           Write-Host "  Cara connect: buka Remote Desktop (mstsc), isi:"
-          Write-Host "    $env:TS_IP"":3389"
+          Write-Host "    ${env:TS_IP}:3389"
           Write-Host "======================================================"
-          Write-Host "::notice title=RDP Siap::IP = $env:TS_IP"":3389 | user = runneradmin"
+          Write-Host "::notice title=RDP Siap::IP = ${env:TS_IP}:3389 | user = runneradmin"
 
       # ------------------------------------------------------
       # 5. Keep-alive
