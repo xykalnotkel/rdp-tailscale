@@ -50,7 +50,6 @@ muncul di log saat Actions berjalan.
   dashboard Tailscale kalau sudah tidak dipakai.
 - **Password RDP**: otomatis random tiap run. Mau password tetap? Buat GitHub secret
   `RDP_PASSWORD`.
-- **Tailscale SSH** ikut aktif (`--ssh`), jadi bisa `ssh runneradmin@IP` sebagai alternatif.
 
 ## Keamanan
 

@@ -68,7 +68,8 @@ jobs:
 
           $job = Start-Job -ScriptBlock {
             param($ts, $hostname)
-            & $ts up --ssh --hostname=$hostname *>&1 | Out-File -FilePath "C:\ts.log" -Encoding utf8
+            # catatan: --ssh TIDAK didukung di Windows, jadi dihilangkan
+            & $ts up --hostname=$hostname *>&1 | Out-File -FilePath "C:\ts.log" -Encoding utf8
           } -ArgumentList $ts, $hostname
 
           # Tunggu link login muncul
