@@ -1,116 +1,127 @@
-name: RDP via Tailscale (tanpa API key)
+name: RDP via Tailscale (Windows, tanpa API key)
 
 # ============================================================
-#  RDP gratis via GitHub Actions + Tailscale (login via LINK)
+#  RDP gratis via GitHub Actions (Windows) + Tailscale
 #  - Tanpa OAuth / API key / client secret
 #  - Cukup klik link login yang muncul di log saat Actions jalan
+#  - RDP native Windows (bisa lewat mstsc / aplikasi RDP apa pun)
 # ============================================================
 
 on:
   workflow_dispatch:
-  # (opsional) auto-start tiap 6 jam — hapus "#" di bawah kalau mau:
-  # schedule:
-  #   - cron: "0 */6 * * *"
 
-# Batalkan run lama kalau ada yang masih jalan
 concurrency:
   group: rdp-tailscale
   cancel-in-progress: true
 
 jobs:
   rdp:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 jam — batas MUTLAK runner GitHub-hosted (publik/private sama).
+    runs-on: windows-latest
+    timeout-minutes: 360   # 6 jam — batas mutlak runner GitHub-hosted
 
     steps:
       # ------------------------------------------------------
-      # 1. Siapkan desktop + server RDP (xrdp + XFCE)
+      # 1. Aktifkan RDP + set password
       # ------------------------------------------------------
-      - name: Siapkan desktop & RDP server (xrdp + XFCE)
+      - name: Aktifkan RDP & set password
+        shell: powershell
         run: |
-          set -e
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            xrdp xfce4 xfce4-terminal xfce4-goodies dbus-x11 > /dev/null
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          sudo systemctl enable xrdp
-          sudo service xrdp restart
+          if ($env:RDP_PASSWORD) {
+            $pass = $env:RDP_PASSWORD
+          } else {
+            $pass = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | ForEach-Object {[char]$_})
+          }
+          "RDP_PASS=$pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-          # Password RDP: pakai secret RDP_PASSWORD kalau ada, selain itu random.
-          RDP_PASS="${RDP_PASSWORD:-$(openssl rand -base64 12)}"
-          echo "RDP_PASS=$RDP_PASS" >> "$GITHUB_ENV"
-
-          # Buat user untuk login RDP
-          sudo useradd -m -s /bin/bash rdpuser 2>/dev/null || true
-          echo "rdpuser:$RDP_PASS" | sudo chpasswd
-          sudo usermod -aG sudo rdpuser
-
-          # Pakai XFCE sebagai session default
-          echo "xfce4-session" | sudo -u rdpuser tee /home/rdpuser/.xsession > /dev/null
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $pass -Force)
+          Write-Host "RDP siap. Username: runneradmin"
 
       # ------------------------------------------------------
-      # 2. Install Tailscale + jalankan daemon
+      # 2. Install Tailscale
       # ------------------------------------------------------
-      - name: Install Tailscale & start daemon
+      - name: Install Tailscale
+        shell: powershell
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscaled --state=mem: &
-          sleep 3
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
+          Start-Process -Wait -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList "/quiet"
+          Start-Sleep -Seconds 3
+          Get-Service tailscaled | Format-Table Status, Name -AutoSize
 
       # ------------------------------------------------------
       # 3. Login Tailscale — KLIK LINK YANG MUNCUL DI LOG
       # ------------------------------------------------------
-      - name: 🔗 Login Tailscale (klik link di bawah)
+      - name: Login Tailscale (klik link di log)
+        shell: powershell
         run: |
-          HOST="gh-rdp-$(openssl rand -hex 3)"
-          sudo tailscale up --ssh --hostname="$HOST" > /tmp/ts.log 2>&1 &
-          TSPID=$!
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          $hostname = "gh-rdp-" + (-join ((48..57)+(97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_}))
 
-          # Tunggu link login muncul (maks ~2 menit)
-          for i in $(seq 1 120); do
-            grep -q "login.tailscale.com" /tmp/ts.log && break
-            sleep 1
-          done
+          $job = Start-Job -ScriptBlock {
+            param($ts, $hostname)
+            & $ts up --ssh --hostname=$hostname *>&1 | Out-File -FilePath "C:\ts.log" -Encoding utf8
+          } -ArgumentList $ts, $hostname
 
-          URL=$(grep -oE 'https://login\.tailscale\.com/[^[:space:]]*' /tmp/ts.log | head -1)
+          # Tunggu link login muncul
+          $url = ""
+          for ($i=0; $i -lt 120; $i++) {
+            if (Test-Path "C:\ts.log") {
+              $m = Select-String -Path "C:\ts.log" -Pattern 'https://login\.tailscale\.com/\S+' -AllMatches
+              if ($m) { $url = $m.Matches[0].Value; break }
+            }
+            Start-Sleep -Seconds 1
+          }
 
-          echo "======================================================"
-          echo "  🔗 BUKA & AUTHORIZE LINK INI (login ke akun Tailscale):"
-          echo "     $URL"
-          echo "======================================================"
-          echo "::notice title=🔗 KLIK LINK LOGIN TAILSCALE::$URL"
+          if (-not $url) {
+            Write-Host "URL tidak ditemukan. Isi log:"
+            if (Test-Path "C:\ts.log") { Get-Content "C:\ts.log" }
+            exit 1
+          }
 
-          # Tunggu sampai kamu klik link & approve (proses tailscale up selesai)
-          wait "$TSPID"
-          echo "✅ Tailscale terhubung sebagai node: $HOST"
-          sudo tailscale status
+          Write-Host "======================================================"
+          Write-Host "  BUKA & AUTHORIZE LINK INI (login ke akun Tailscale):"
+          Write-Host "     $url"
+          Write-Host "======================================================"
+          Write-Host "::notice title=KLIK LINK LOGIN TAILSCALE::$url"
+
+          # Tunggu sampai terhubung (ada IP 100.x)
+          for ($i=0; $i -lt 180; $i++) {
+            $ip = (& $ts ip -4 2>&1 | Out-String).Trim()
+            if ($ip -match '^100\.') { break }
+            Start-Sleep -Seconds 2
+          }
+          $ip = (& $ts ip -4 2>&1 | Out-String).Trim()
+          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          Write-Host "--- Tailscale status ---"
+          & $ts status
 
       # ------------------------------------------------------
       # 4. Tampilkan info koneksi RDP
       # ------------------------------------------------------
       - name: Tampilkan info koneksi RDP
+        shell: powershell
         run: |
-          IP=$(sudo tailscale ip -4)
-          echo "======================================================"
-          echo "  🌐 IP Tailscale : $IP"
-          echo "  🖥️  Port RDP     : 3389"
-          echo "  👤 Username     : rdpuser"
-          echo "  🔑 Password     : $RDP_PASS"
-          echo "======================================================"
-          echo "  Cara connect: buka Remote Desktop, isi alamat:"
-          echo "    $IP:3389"
-          echo "======================================================"
-          echo "::notice title=🖥️ RDP Siap::IP = $IP :3389 | user = rdpuser"
+          Write-Host "======================================================"
+          Write-Host "  IP Tailscale : $env:TS_IP"
+          Write-Host "  Port RDP     : 3389"
+          Write-Host "  Username     : runneradmin"
+          Write-Host "  Password     : $env:RDP_PASS"
+          Write-Host "======================================================"
+          Write-Host "  Cara connect: buka Remote Desktop (mstsc), isi:"
+          Write-Host "    $env:TS_IP"":3389"
+          Write-Host "======================================================"
+          Write-Host "::notice title=RDP Siap::IP = $env:TS_IP"":3389 | user = runneradmin"
 
       # ------------------------------------------------------
-      # 5. Keep-alive — biar runner tetap hidup selama dipakai
+      # 5. Keep-alive
       # ------------------------------------------------------
-      - name: Keep-alive (jangan tutup tab sampai selesai)
+      - name: Keep-alive
+        shell: powershell
         run: |
-          echo "Sesi RDP aktif. Job ini akan berakhir otomatis setelah batas waktu."
-          while true; do
-            echo "$(date -u) — masih hidup | IP: $(sudo tailscale ip -4)"
-            sleep 300
-          done
+          while ($true) {
+            Write-Host "$(Get-Date -Format u) — masih hidup | IP: $env:TS_IP"
+            Start-Sleep -Seconds 300
+          }
