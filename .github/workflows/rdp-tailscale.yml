@@ -1,0 +1,116 @@
+name: RDP via Tailscale (tanpa API key)
+
+# ============================================================
+#  RDP gratis via GitHub Actions + Tailscale (login via LINK)
+#  - Tanpa OAuth / API key / client secret
+#  - Cukup klik link login yang muncul di log saat Actions jalan
+# ============================================================
+
+on:
+  workflow_dispatch:
+  # (opsional) auto-start tiap 6 jam — hapus "#" di bawah kalau mau:
+  # schedule:
+  #   - cron: "0 */6 * * *"
+
+# Batalkan run lama kalau ada yang masih jalan
+concurrency:
+  group: rdp-tailscale
+  cancel-in-progress: true
+
+jobs:
+  rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 jam — batas MUTLAK runner GitHub-hosted (publik/private sama).
+
+    steps:
+      # ------------------------------------------------------
+      # 1. Siapkan desktop + server RDP (xrdp + XFCE)
+      # ------------------------------------------------------
+      - name: Siapkan desktop & RDP server (xrdp + XFCE)
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xrdp xfce4 xfce4-terminal xfce4-goodies dbus-x11 > /dev/null
+
+          sudo systemctl enable xrdp
+          sudo service xrdp restart
+
+          # Password RDP: pakai secret RDP_PASSWORD kalau ada, selain itu random.
+          RDP_PASS="${RDP_PASSWORD:-$(openssl rand -base64 12)}"
+          echo "RDP_PASS=$RDP_PASS" >> "$GITHUB_ENV"
+
+          # Buat user untuk login RDP
+          sudo useradd -m -s /bin/bash rdpuser 2>/dev/null || true
+          echo "rdpuser:$RDP_PASS" | sudo chpasswd
+          sudo usermod -aG sudo rdpuser
+
+          # Pakai XFCE sebagai session default
+          echo "xfce4-session" | sudo -u rdpuser tee /home/rdpuser/.xsession > /dev/null
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+
+      # ------------------------------------------------------
+      # 2. Install Tailscale + jalankan daemon
+      # ------------------------------------------------------
+      - name: Install Tailscale & start daemon
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscaled --state=mem: &
+          sleep 3
+
+      # ------------------------------------------------------
+      # 3. Login Tailscale — KLIK LINK YANG MUNCUL DI LOG
+      # ------------------------------------------------------
+      - name: 🔗 Login Tailscale (klik link di bawah)
+        run: |
+          HOST="gh-rdp-$(openssl rand -hex 3)"
+          sudo tailscale up --ssh --hostname="$HOST" > /tmp/ts.log 2>&1 &
+          TSPID=$!
+
+          # Tunggu link login muncul (maks ~2 menit)
+          for i in $(seq 1 120); do
+            grep -q "login.tailscale.com" /tmp/ts.log && break
+            sleep 1
+          done
+
+          URL=$(grep -oE 'https://login\.tailscale\.com/[^[:space:]]*' /tmp/ts.log | head -1)
+
+          echo "======================================================"
+          echo "  🔗 BUKA & AUTHORIZE LINK INI (login ke akun Tailscale):"
+          echo "     $URL"
+          echo "======================================================"
+          echo "::notice title=🔗 KLIK LINK LOGIN TAILSCALE::$URL"
+
+          # Tunggu sampai kamu klik link & approve (proses tailscale up selesai)
+          wait "$TSPID"
+          echo "✅ Tailscale terhubung sebagai node: $HOST"
+          sudo tailscale status
+
+      # ------------------------------------------------------
+      # 4. Tampilkan info koneksi RDP
+      # ------------------------------------------------------
+      - name: Tampilkan info koneksi RDP
+        run: |
+          IP=$(sudo tailscale ip -4)
+          echo "======================================================"
+          echo "  🌐 IP Tailscale : $IP"
+          echo "  🖥️  Port RDP     : 3389"
+          echo "  👤 Username     : rdpuser"
+          echo "  🔑 Password     : $RDP_PASS"
+          echo "======================================================"
+          echo "  Cara connect: buka Remote Desktop, isi alamat:"
+          echo "    $IP:3389"
+          echo "======================================================"
+          echo "::notice title=🖥️ RDP Siap::IP = $IP :3389 | user = rdpuser"
+
+      # ------------------------------------------------------
+      # 5. Keep-alive — biar runner tetap hidup selama dipakai
+      # ------------------------------------------------------
+      - name: Keep-alive (jangan tutup tab sampai selesai)
+        run: |
+          echo "Sesi RDP aktif. Job ini akan berakhir otomatis setelah batas waktu."
+          while true; do
+            echo "$(date -u) — masih hidup | IP: $(sudo tailscale ip -4)"
+            sleep 300
+          done
