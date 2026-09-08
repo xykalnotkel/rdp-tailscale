@@ -1,0 +1,7 @@
+# panel
+node_modules/
+.env
+*.log
+
+# state otomatis ditulis workflow via GitHub API (jangan di-commit manual)
+runtime/state.json

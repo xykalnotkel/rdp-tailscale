@@ -1,0 +1,2 @@
+# Folder ini diisi otomatis oleh workflow (state.json terenkripsi).
+# Isi file dikirim oleh runner lewat GitHub Contents API, bukan di-commit manual.

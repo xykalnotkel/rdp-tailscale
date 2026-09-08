@@ -1,238 +1,279 @@
-name: RDP via Tailscale (Windows, tanpa API key)
+name: RDP via Tailscale (Windows)
 
-# ============================================================
-#  RDP gratis via GitHub Actions (Windows) + Tailscale
-#  - Tanpa OAuth / API key / client secret
-#  - Cukup klik link login yang muncul di log saat Actions jalan
-#  - RDP native Windows (bisa lewat mstsc / aplikasi RDP apa pun)
-#
-#  + TAMBAHAN: tema ungu (dark) + wallpaper otomatis
-# ============================================================
+# ============================================================================
+#  v2 - versi panel
+#  - Password acak otomatis tiap run (16 karakter)
+#  - PC name bisa diatur (default: Kall)
+#  - Login Tailscale OTOMATIS kalau secret TS_AUTHKEY diisi
+#    (tanpa TS_AUTHKEY tetap bisa: klik link di log seperti biasa)
+#  - Provision penuh di provision.ps1: drivers, admin tertinggi, taskbar
+#    transparan, Lightshot, optimasi, wallpaper custom (upload/URL)
+#  - Di akhir run, info koneksi (IP + password) dikirim TERENKRIPSI ke
+#    runtime/state.json biar web panel bisa baca tanpa buka log Actions.
+#    Enkripsi pakai AES-256 (kunci: secret PANEL_KEY)
+# ============================================================================
 
 on:
   workflow_dispatch:
     inputs:
+      PC_NAME:
+        description: 'Nama PC (Windows + Tailscale)'
+        required: false
+        default: 'Kall'
       EXIT_NODE:
-        description: 'Tailscale exit node (IP 100.x atau nama device) supaya IP keluar = IP kamu (rumah/VPS), bukan datacenter GitHub. Kosongkan kalau gak punya.'
+        description: 'Tailscale exit node (IP 100.x atau nama device) supaya IP keluar = IP kamu, bukan datacenter. Kosongkan kalau tidak pakai.'
+        required: false
+        default: ''
+      WALLPAPER_URL:
+        description: 'URL wallpaper langsung. Kosongkan = wallpaper default / hasil upload panel.'
         required: false
         default: ''
 
+permissions:
+  contents: write
+
 concurrency:
-  group: rdp-tailscale
-  cancel-in-progress: true   # NOTE: kalau kamu trigger lagi saat masih jalan, run yang lama di-cancel
+  group: rdp-kall
+  cancel-in-progress: true
 
 jobs:
   rdp:
     runs-on: windows-latest
-    timeout-minutes: 360   # 6 jam — batas mutlak runner GitHub-hosted
+    timeout-minutes: 360   # 6 jam = batas runner GitHub-hosted
 
     steps:
-      # ------------------------------------------------------
-      # 1. Aktifkan RDP + set password
-      # ------------------------------------------------------
-      - name: Aktifkan RDP & set password
+      # ------------------------------------------------------------
+      # 1. Ambil kode repo (provision.ps1)
+      # ------------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # 2. Aktifkan RDP + password acak
+      # ------------------------------------------------------------
+      - name: Aktifkan RDP dan set password acak
         shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 
           if ($env:RDP_PASSWORD) {
             $pass = $env:RDP_PASSWORD
+            Write-Host 'Menggunakan RDP_PASSWORD dari secret (password tetap).'
           } else {
-            $pass = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 12 | ForEach-Object {[char]$_})
+            $chars = (48..57) + (65..90) + (97..122)   # A-Z a-z 0-9, tanpa karakter ambigu
+            $pass = -join ($chars | Get-Random -Count 16 | ForEach-Object { [char]$_ })
+            Write-Host 'Password acak baru dibuat (16 karakter).'
           }
           "RDP_PASS=$pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
-          Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $pass -Force)
-          Write-Host "RDP siap. Username: runneradmin"
+          Set-LocalUser -Name 'runneradmin' -Password (ConvertTo-SecureString -AsPlainText $pass -Force)
+          if (-not (Get-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue)) {
+            Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
+          }
+          Write-Host 'RDP siap. Username: runneradmin'
 
-      # ------------------------------------------------------
-      # 2. Install Tailscale
-      # ------------------------------------------------------
+      # ------------------------------------------------------------
+      # 3. Install Tailscale
+      # ------------------------------------------------------------
       - name: Install Tailscale
         shell: powershell
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
-          Start-Process -Wait -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList "/quiet"
+          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe' -OutFile "$env:TEMP\tailscale-setup.exe"
+          Start-Process -Wait -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList '/quiet'
           Start-Sleep -Seconds 5
-          # Di Windows nama service-nya "Tailscale" (bukan "tailscaled" seperti di Linux)
-          Get-Service Tailscale | Format-Table Status, Name -AutoSize
           if (-not (Get-Service Tailscale -ErrorAction SilentlyContinue)) {
-            Write-Host "Service Tailscale tidak ditemukan. Daftar service terkait:"
             Get-Service | Where-Object { $_.Name -like '*tail*' } | Format-Table Status, Name -AutoSize
             exit 1
           }
+          Write-Host 'Tailscale terinstall'
 
-      # ------------------------------------------------------
-      # 3. Login Tailscale — KLIK LINK YANG MUNCUL DI LOG
-      # ------------------------------------------------------
-      - name: Login Tailscale (klik link di log)
+      # ------------------------------------------------------------
+      # 4. Login Tailscale (otomatis via TS_AUTHKEY; fallback klik link)
+      # ------------------------------------------------------------
+      - name: Login Tailscale
         shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          $ErrorActionPreference = "Continue"
-          $ts = "C:\Program Files\Tailscale\tailscale.exe"
-          $hostname = "gh-rdp-" + (-join ((48..57)+(97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_}))
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $hostname = ('${{ inputs.PC_NAME }}' -replace '[^A-Za-z0-9\-]', '')
+          if (-not $hostname) { $hostname = 'Kall' }
 
-          $job = Start-Job -ScriptBlock {
-            param($ts, $hostname)
-            # catatan: --ssh TIDAK didukung di Windows, jadi dihilangkan
-            & $ts up --hostname=$hostname *>&1 | Out-File -FilePath "C:\ts.log" -Encoding utf8
-          } -ArgumentList $ts, $hostname
-
-          # Tunggu link login muncul
-          $url = ""
-          for ($i=0; $i -lt 120; $i++) {
-            if (Test-Path "C:\ts.log") {
-              $m = Select-String -Path "C:\ts.log" -Pattern 'https://login\.tailscale\.com/\S+' -AllMatches
-              if ($m) { $url = $m.Matches[0].Value; break }
+          function Wait-IP([int]$MaxTries) {
+            for ($i = 0; $i -lt $MaxTries; $i++) {
+              $ip = (& $ts ip -4 2>$null | Out-String).Trim()
+              if ($ip -match '^100\.') { return $ip }
+              Start-Sleep -Seconds 2
             }
-            Start-Sleep -Seconds 1
+            return ''
           }
 
-          if (-not $url) {
-            Write-Host "URL tidak ditemukan. Isi log:"
-            if (Test-Path "C:\ts.log") { Get-Content "C:\ts.log" }
-            exit 1
+          $ip = ''
+
+          # --- mode A: auth key (otomatis) ---
+          if ($env:TS_AUTHKEY) {
+            Write-Host 'TS_AUTHKEY ditemukan - login otomatis (tanpa klik link).'
+            & $ts up --authkey $env:TS_AUTHKEY --hostname $hostname *>&1 | Out-Host
+            $ip = Wait-IP 150   # tunggu maks 5 menit
+            if (-not $ip) {
+              Write-Host '::warning::TS_AUTHKEY tidak menghasilkan koneksi (kemungkinan invalid/kedaluwarsa) - fallback ke mode link manual.'
+              & $ts logout 2>$null | Out-Null
+              Start-Sleep -Seconds 3
+            }
           }
 
-          Write-Host "======================================================"
-          Write-Host "  BUKA & AUTHORIZE LINK INI (login ke akun Tailscale):"
-          Write-Host "     $url"
-          Write-Host "======================================================"
-          Write-Host "::notice title=KLIK LINK LOGIN TAILSCALE::$url"
+          # --- mode B: link login interaktif (dipakai kalau tidak ada authkey / authkey gagal) ---
+          if (-not $ip) {
+            Write-Host 'Mode interaktif: klik link login yang muncul di bawah (buka sekali per sesi).'
+            $job = Start-Job -ScriptBlock {
+              param($ts, $hostname)
+              & $ts up --hostname=$hostname *>&1 | Out-File -FilePath 'C:\ts.log' -Encoding utf8
+            } -ArgumentList $ts, $hostname
 
-          # Tunggu sampai terhubung (ada IP 100.x), maks 30 menit
-          $ip = ""
-          for ($i=0; $i -lt 900; $i++) {
-            $ip = (& $ts ip -4 2>$null | Out-String).Trim()
-            if ($ip -match '^100\.') { break }
-            Start-Sleep -Seconds 2
+            $url = ''
+            for ($i = 0; $i -lt 150; $i++) {
+              if (Test-Path 'C:\ts.log') {
+                $m = Select-String -Path 'C:\ts.log' -Pattern 'https://login\.tailscale\.com/\S+' -AllMatches
+                if ($m) { $url = $m.Matches[0].Value; break }
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $url) {
+              Write-Host 'URL tidak ditemukan. Isi log:'
+              if (Test-Path 'C:\ts.log') { Get-Content 'C:\ts.log' }
+            } else {
+              Write-Host '=========================================================='
+              Write-Host ' BUKA DAN AUTHORIZE LINK INI (login ke akun Tailscale):'
+              Write-Host "    $url"
+              Write-Host '=========================================================='
+              Write-Host "::notice title=KLIK LINK LOGIN TAILSCALE::$url"
+            }
+            $ip = Wait-IP 900   # tunggu approve maks 30 menit
           }
+
           if ($ip -match '^100\.') {
             "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
             Write-Host "SUKSES! IP Tailscale: $ip"
           } else {
-            Write-Host "Belum terhubung (link belum di-approve). Status Tailscale:"
+            Write-Host 'Belum terhubung (auth key invalid / link belum di-approve).'
+            & $ts status 2>$null | Out-Host
           }
-          & $ts status 2>$null | Out-Host
-          # Pastikan step tidak gagal hanya karena exit code tailscale
           exit 0
 
-      # ------------------------------------------------------
-      # 4. Tampilkan info koneksi RDP
-      # ------------------------------------------------------
-      - name: Tampilkan info koneksi RDP
+      # ------------------------------------------------------------
+      # 5. Exit node (opsional, biar IP internet = IP rumah kamu)
+      # ------------------------------------------------------------
+      - name: Set exit node (opsional)
         shell: powershell
+        env:
+          EXIT_NODE: ${{ inputs.EXIT_NODE }}
         run: |
-          Write-Host "======================================================"
-          Write-Host "  IP Tailscale : $env:TS_IP"
-          Write-Host "  Port RDP     : 3389"
-          Write-Host "  Username     : runneradmin"
-          Write-Host "  Password     : $env:RDP_PASS"
-          Write-Host "======================================================"
-          Write-Host "  Cara connect: buka Remote Desktop (mstsc), isi:"
-          Write-Host "    ${env:TS_IP}:3389"
-          Write-Host "======================================================"
-          Write-Host "::notice title=RDP Siap::IP = ${env:TS_IP}:3389 | user = runneradmin"
-
-      # ------------------------------------------------------
-      # 5. (OPSIONAL) Exit node + siapkan browser
-      #    Biar IP yang dilihat Google = IP rumah/VPS kamu,
-      #    bukan IP datacenter GitHub (Azure) yang suka kena flag.
-      # ------------------------------------------------------
-      - name: Exit node Tailscale + tips login Google (opsional)
-        shell: powershell
-        run: |
-          $ts = "C:\Program Files\Tailscale\tailscale.exe"
-
-          # Pasang exit node kalau diisi (contoh: 100.x.y.z atau nama device)
           if ($env:EXIT_NODE) {
             Write-Host "Pasang exit node -> $env:EXIT_NODE"
-            & $ts set --exit-node=$env:EXIT_NODE 2>&1 | Out-Host
+            & 'C:\Program Files\Tailscale\tailscale.exe' set --exit-node=$env:EXIT_NODE 2>&1 | Out-Host
             Start-Sleep -Seconds 5
-            & $ts status 2>$null | Out-Host
           } else {
-            Write-Host "EXIT_NODE kosong -> traffic browser tetap lewat IP GitHub/Azure."
-            Write-Host "Kalau login Google kena 'unusual activity', isi input EXIT_NODE"
-            Write-Host "dengan IP perangkat Tailscale kamu (HP/PC rumah) yang aktif exit node."
+            Write-Host 'EXIT_NODE kosong - traffic internet tetap lewat IP datacenter. Login Google bisa minta verifikasi tambahan.'
           }
 
-          # Pastikan Chrome ada (biasanya udah keinstall di runner)
-          if (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") {
-            Write-Host "Chrome tersedia"
-          } else {
-            Write-Host "Chrome tidak ditemukan (pakai Edge saja)"
-          }
-
-          Write-Host "======================================================"
-          Write-Host "  TIPS BIAR LOGIN GOOGLE GA KENA FLAG:"
-          Write-Host "  1. Pakai exit node (IP rumah kamu) - PALING PENTING"
-          Write-Host "  2. Login lewat browser biasa, JANGAN incognito"
-          Write-Host "  3. Aktifkan 2FA / passkey di akun Google-nya"
-          Write-Host "  4. Saat muncul 'verify it's you', konfirmasi aja 1x"
-          Write-Host "  5. Jangan login-logout berulang dari IP baru"
-          Write-Host "======================================================"
-
-      # ------------------------------------------------------
-      # 6. TEMA UNGU (dark + aksen) + WALLPAPER
-      # ------------------------------------------------------
-      - name: Set tema ungu + wallpaper
+      # ------------------------------------------------------------
+      # 6. Provision lengkap: PC name, wallpaper, tema, taskbar
+      #    transparan, Lightshot, driver & runtime, admin tertinggi,
+      #    optimasi, security longgar, sesi Google (opsional)
+      # ------------------------------------------------------------
+      - name: Provision lengkap (provision.ps1)
         shell: powershell
+        env:
+          PC_NAME: ${{ inputs.PC_NAME }}
+          WALLPAPER_URL: ${{ inputs.WALLPAPER_URL }}
+          WALLPAPER_DEFAULT: 'https://api-asset.haekal.web.id/a/xyspace-assets%2Fapproved%2FXyCloudStore_rental_pc_morphing_16x9'
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $ProgressPreference = 'SilentlyContinue'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $ErrorActionPreference = 'Continue'
+          & "$env:GITHUB_WORKSPACE\provision.ps1"
 
-          # ===== 1) TEMA: dark mode + aksen UNGU (#8B5CF6) =====
-          $pers = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
-          New-Item -Path $pers -Force | Out-Null
-          Set-ItemProperty -Path $pers -Name AppsUseLightTheme    -Value 0 -Type DWord
-          Set-ItemProperty -Path $pers -Name SystemUsesLightTheme -Value 0 -Type DWord
-          Set-ItemProperty -Path $pers -Name ColorPrevalence      -Value 1 -Type DWord
-          Set-ItemProperty -Path $pers -Name EnableTransparency   -Value 0 -Type DWord
-
-          # Aksen ungu #8B5CF6 -> format ABGR 0xAABBGGRR = 0xFFF65C8B
-          $dwm = 'HKCU:\Software\Microsoft\Windows\DWM'
-          New-Item -Path $dwm -Force | Out-Null
-          Set-ItemProperty -Path $dwm -Name AccentColor           -Value 4294335627 -Type DWord  # 0xFFF65C8B
-          Set-ItemProperty -Path $dwm -Name ColorizationColor     -Value 3304479883 -Type DWord  # 0xC4F65C8B
-          Set-ItemProperty -Path $dwm -Name ColorizationAfterglow -Value 3304479883 -Type DWord
-          Write-Host "Tema ungu (dark) aktif"
-
-          # ===== 2) WALLPAPER =====
-          $img = "$env:USERPROFILE\wallpaper.jpg"
-          $urls = @(
-            'https://api-asset.haekal.web.id/a/xyspace-assets%2Fapproved%2FXyCloudStore_rental_pc_morphing_16x9',
-            'https://cdn.haekal.web.id/image/upload/f_auto,q_auto:good,dpr_auto/v1788811715/xyspace-assets/approved/XyCloudStore_rental_pc_morphing_16x9.png'
-          )
-          $ok = $false
-          foreach ($u in $urls) {
-            try {
-              Invoke-WebRequest -Uri $u -OutFile $img -UseBasicParsing
-              if ((Test-Path $img) -and (Get-Item $img).Length -gt 10000) { $ok = $true; break }
-            } catch {
-              Write-Host "Gagal download $u -> $($_.Exception.Message)"
-            }
+      # ------------------------------------------------------------
+      # 7. Kirim info koneksi (terenkripsi) ke runtime/state.json
+      #    supaya web panel tahu IP + password tanpa buka log Actions.
+      #    Enkripsi: AES-256-CBC, kunci dari secret PANEL_KEY.
+      # ------------------------------------------------------------
+      - name: Laporkan status ke panel (terenkripsi)
+        shell: powershell
+        env:
+          PANEL_KEY: ${{ secrets.PANEL_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if (-not $env:PANEL_KEY) {
+            Write-Host '::warning::Secret PANEL_KEY belum diset - panel tidak bisa baca info koneksi otomatis. Cek log Actions untuk IP/password.'
+            exit 0
+          }
+          if (-not $env:TS_IP) {
+            Write-Host '::warning::Tailscale belum dapat IP - state tidak dikirim. Cek log Actions.'
+            exit 0
           }
 
-          if ($ok) {
-            $desk = 'HKCU:\Control Panel\Desktop'
-            Set-ItemProperty -Path $desk -Name Wallpaper      -Value $img
-            Set-ItemProperty -Path $desk -Name WallpaperStyle -Value '10'   # 10 = Fill (isi penuh)
-            Set-ItemProperty -Path $desk -Name TileWallpaper  -Value '0'
-            RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters 1, True
-            Write-Host "Wallpaper OK -> $img"
-          } else {
-            Write-Host "::warning::Wallpaper gagal diunduh, RDP tetap bisa dipakai"
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $dns = ''
+          try {
+            $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.')
+          } catch {}
+
+          $payload = [ordered]@{
+            v             = 1
+            ip            = $env:TS_IP
+            dns           = $dns
+            user          = 'runneradmin'
+            pass          = $env:RDP_PASS
+            machine       = '${{ inputs.PC_NAME }}'
+            provisionedAt = (Get-Date).ToUniversalTime().ToString('o')
+            expiresAt     = (Get-Date).ToUniversalTime().AddMinutes(330).ToString('o')  # 5,5 jam aman di bawah limit 6 jam
+          } | ConvertTo-Json -Compress
+
+          # hex -> byte[] (PS 5.1 tidak punya FromHexString)
+          $hex = $env:PANEL_KEY
+          if ($hex.Length % 2 -ne 0) { throw 'PANEL_KEY harus hex genap' }
+          $key = New-Object byte[] ($hex.Length / 2)
+          for ($i = 0; $i -lt $key.Length; $i++) {
+            $key[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
           }
 
-      # ------------------------------------------------------
-      # 7. Keep-alive
-      # ------------------------------------------------------
+          $aes = [System.Security.Cryptography.Aes]::Create()
+          $aes.Key = $key
+          $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+          $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+          $aes.GenerateIV()
+          $enc = $aes.CreateEncryptor()
+          $plain = [System.Text.Encoding]::UTF8.GetBytes($payload)
+          $cipher = $enc.TransformFinalBlock($plain, 0, $plain.Length)
+          $blob = 'v1.' + [Convert]::ToBase64String($aes.IV) + '.' + [Convert]::ToBase64String($cipher)
+
+          $repo = $env:GITHUB_REPOSITORY
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'rdp-kall'; Accept = 'application/vnd.github+json' }
+          $path = 'runtime/state.json'
+
+          $sha = $null
+          try {
+            $cur = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Get
+            $sha = $cur.sha
+          } catch {}
+
+          $put = @{ message = 'update state run (encrypted)'; content = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blob)) }
+          if ($sha) { $put.sha = $sha }
+          try {
+            Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Put -Body ($put | ConvertTo-Json -Compress) | Out-Null
+            Write-Host 'Status terenkripsi terkirim ke runtime/state.json'
+          } catch {
+            Write-Host "::warning::Gagal kirim state: $($_.Exception.Message)"
+          }
+
+      # ------------------------------------------------------------
+      # 8. Keep-alive (biar VM tetap hidup sampai 6 jam / di-cancel panel)
+      # ------------------------------------------------------------
       - name: Keep-alive
         shell: powershell
         run: |
           while ($true) {
-            Write-Host "$(Get-Date -Format u) - masih hidup | IP: $env:TS_IP"
+            Write-Host "$(Get-Date -Format u) - hidup | IP: $env:TS_IP"
             Start-Sleep -Seconds 300
           }
