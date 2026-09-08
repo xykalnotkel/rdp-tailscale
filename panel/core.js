@@ -155,6 +155,8 @@ async function handleStart(req, res) {
   try { input = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'body bukan JSON' }); }
 
   const inputs = {};
+  inputs.OS = String(input.os || 'Windows').trim().startsWith('Linux') ? 'Linux (Ubuntu)' : 'Windows';
+  inputs.PROVISION_MODE = String(input.provision || 'Cepat').trim() === 'Full' ? 'Full' : 'Cepat';
   inputs.PC_NAME = String(input.pcName || 'Kall').trim().slice(0, 15) || 'Kall';
   if (input.exitNode && String(input.exitNode).trim()) inputs.EXIT_NODE = String(input.exitNode).trim();
   if (input.wallpaperUrl && String(input.wallpaperUrl).trim()) inputs.WALLPAPER_URL = String(input.wallpaperUrl).trim();

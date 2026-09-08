@@ -1,27 +1,41 @@
-name: RDP via Tailscale (Windows)
+name: RDP via Tailscale (Windows/Linux)
 
 # ============================================================================
-#  v2 - versi panel
-#  - Password acak otomatis tiap run (16 karakter)
-#  - PC name bisa diatur (default: Kall)
-#  - Login Tailscale OTOMATIS kalau secret TS_AUTHKEY diisi
-#    (tanpa TS_AUTHKEY tetap bisa: klik link di log seperti biasa)
-#  - Provision penuh di provision.ps1: drivers, admin tertinggi, taskbar
-#    transparan, Lightshot, optimasi, wallpaper custom (upload/URL)
-#  - Di akhir run, info koneksi (IP + password) dikirim TERENKRIPSI ke
-#    runtime/state.json biar web panel bisa baca tanpa buka log Actions.
-#    Enkripsi pakai AES-256 (kunci: secret PANEL_KEY)
+#  v3 - multi-OS + mode cepat
+#  - OS bisa dipilih: Windows (windows-latest) / Linux Ubuntu (ubuntu-latest)
+#  - PROVISION_MODE: "Cepat" = tanpa install aplikasi (nyala ~4-5 menit),
+#    "Full" = + browser, runtime, taskbar transparan, Lightshot (Windows)
+#  - Password TETAP kalau secret RDP_PASSWORD diisi, acak kalau kosong
+#  - Login Tailscale otomatis via secret TS_AUTHKEY (fallback klik-link)
+#  - Provision tidak memblokir: kalau gagal/timeout, laporan kredensial
+#    tetap dikirim (continue-on-error) ke runtime/state.json (AES-256)
 # ============================================================================
 
 on:
   workflow_dispatch:
     inputs:
+      OS:
+        description: 'Sistem operasi VM'
+        required: true
+        default: 'Windows'
+        type: choice
+        options:
+          - Windows
+          - Linux (Ubuntu)
+      PROVISION_MODE:
+        description: 'Mode provisioning (Cepat = langsung jalan, Full = install aplikasi)'
+        required: true
+        default: 'Cepat'
+        type: choice
+        options:
+          - Cepat
+          - Full
       PC_NAME:
         description: 'Nama PC (Windows + Tailscale)'
         required: false
         default: 'Kall'
       EXIT_NODE:
-        description: 'Tailscale exit node (IP 100.x atau nama device) supaya IP keluar = IP kamu, bukan datacenter. Kosongkan kalau tidak pakai.'
+        description: 'Exit node Tailscale (khusus Windows; IP 100.x / nama device). Biar IP keluar = IP rumah kamu.'
         required: false
         default: ''
       WALLPAPER_URL:
@@ -38,68 +52,70 @@ concurrency:
 
 jobs:
   rdp:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event.inputs.OS == 'Linux (Ubuntu)') && 'ubuntu-latest' || 'windows-latest' }}
     timeout-minutes: 360   # 6 jam = batas runner GitHub-hosted
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Ambil kode repo (provision.ps1)
-      # ------------------------------------------------------------
       - uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # 2. Aktifkan RDP + password acak
+      # 1. Aktifkan RDP + set password (per-OS)
       # ------------------------------------------------------------
-      - name: Aktifkan RDP dan set password acak
+      - name: Aktifkan RDP (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
-
-          if ($env:RDP_PASSWORD) {
-            $pass = $env:RDP_PASSWORD
-            Write-Host 'Menggunakan RDP_PASSWORD dari secret (password tetap).'
-          } else {
-            $chars = (48..57) + (65..90) + (97..122)   # A-Z a-z 0-9, tanpa karakter ambigu
+          if ($env:RDP_PASSWORD) { $pass = $env:RDP_PASSWORD } else {
+            $chars = (48..57) + (65..90) + (97..122)
             $pass = -join ($chars | Get-Random -Count 16 | ForEach-Object { [char]$_ })
-            Write-Host 'Password acak baru dibuat (16 karakter).'
           }
           "RDP_PASS=$pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-
           Set-LocalUser -Name 'runneradmin' -Password (ConvertTo-SecureString -AsPlainText $pass -Force)
           if (-not (Get-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue)) {
             Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
           }
-          Write-Host 'RDP siap. Username: runneradmin'
+          Write-Host 'RDP Windows siap - user: runneradmin'
+
+      - name: Siapkan akses remote (Linux Ubuntu - xrdp)
+        if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
+        shell: bash
+        run: |
+          set -e
+          if [ -n "$RDP_PASSWORD" ]; then PASS="$RDP_PASSWORD"; else
+            PASS=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+          fi
+          echo "RDP_PASS=$PASS" >> "$GITHUB_ENV"
+          echo "runner:$PASS" | sudo chpasswd
+          sudo adduser runner ssl-cert 2>/dev/null || true
+          echo 'RDP Linux siap - user: runner (password diatur)'
 
       # ------------------------------------------------------------
-      # 3. Install Tailscale
+      # 2. Install + login Tailscale (Windows)
       # ------------------------------------------------------------
-      - name: Install Tailscale
+      - name: Install + login Tailscale (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe' -OutFile "$env:TEMP\tailscale-setup.exe"
           Start-Process -Wait -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList '/quiet'
           Start-Sleep -Seconds 5
-          if (-not (Get-Service Tailscale -ErrorAction SilentlyContinue)) {
-            Get-Service | Where-Object { $_.Name -like '*tail*' } | Format-Table Status, Name -AutoSize
-            exit 1
-          }
-          Write-Host 'Tailscale terinstall'
+          if (-not (Get-Service Tailscale -ErrorAction SilentlyContinue)) { Get-Service | Where-Object { $_.Name -like '*tail*' } | Format-Table Status, Name -AutoSize; exit 1 }
+          Write-Host 'Tailscale terinstall (Windows)'
 
-      # ------------------------------------------------------------
-      # 4. Login Tailscale (otomatis via TS_AUTHKEY; fallback klik link)
-      # ------------------------------------------------------------
-      - name: Login Tailscale
+      - name: Login Tailscale (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
-          $hostname = ('${{ inputs.PC_NAME }}' -replace '[^A-Za-z0-9\-]', '')
+          $hostname = ('${{ github.event.inputs.PC_NAME }}' -replace '[^A-Za-z0-9\-]', '')
           if (-not $hostname) { $hostname = 'Kall' }
-
           function Wait-IP([int]$MaxTries) {
             for ($i = 0; $i -lt $MaxTries; $i++) {
               $ip = (& $ts ip -4 2>$null | Out-String).Trim()
@@ -108,172 +124,201 @@ jobs:
             }
             return ''
           }
-
           $ip = ''
-
-          # --- mode A: auth key (otomatis) ---
           if ($env:TS_AUTHKEY) {
-            Write-Host 'TS_AUTHKEY ditemukan - login otomatis (tanpa klik link).'
+            Write-Host 'Login otomatis via TS_AUTHKEY...'
             & $ts up --authkey $env:TS_AUTHKEY --hostname $hostname *>&1 | Out-Host
-            $ip = Wait-IP 150   # tunggu maks 5 menit
-            if (-not $ip) {
-              Write-Host '::warning::TS_AUTHKEY tidak menghasilkan koneksi (kemungkinan invalid/kedaluwarsa) - fallback ke mode link manual.'
-              & $ts logout 2>$null | Out-Null
-              Start-Sleep -Seconds 3
-            }
+            $ip = Wait-IP 150
+            if (-not $ip) { Write-Host '::warning::TS_AUTHKEY gagal - fallback mode link.'; & $ts logout 2>$null | Out-Null; Start-Sleep -Seconds 3 }
           }
-
-          # --- mode B: link login interaktif (dipakai kalau tidak ada authkey / authkey gagal) ---
           if (-not $ip) {
-            Write-Host 'Mode interaktif: klik link login yang muncul di bawah (buka sekali per sesi).'
-            $job = Start-Job -ScriptBlock {
-              param($ts, $hostname)
-              & $ts up --hostname=$hostname *>&1 | Out-File -FilePath 'C:\ts.log' -Encoding utf8
-            } -ArgumentList $ts, $hostname
-
+            $job = Start-Job -ScriptBlock { param($ts,$hn) & $ts up --hostname=$hn *>&1 | Out-File -FilePath 'C:\ts.log' -Encoding utf8 } -ArgumentList $ts, $hostname
             $url = ''
             for ($i = 0; $i -lt 150; $i++) {
-              if (Test-Path 'C:\ts.log') {
-                $m = Select-String -Path 'C:\ts.log' -Pattern 'https://login\.tailscale\.com/\S+' -AllMatches
-                if ($m) { $url = $m.Matches[0].Value; break }
-              }
+              if (Test-Path 'C:\ts.log') { $m = Select-String -Path 'C:\ts.log' -Pattern 'https://login\.tailscale\.com/\S+' -AllMatches; if ($m) { $url = $m.Matches[0].Value; break } }
               Start-Sleep -Seconds 1
             }
-            if (-not $url) {
-              Write-Host 'URL tidak ditemukan. Isi log:'
-              if (Test-Path 'C:\ts.log') { Get-Content 'C:\ts.log' }
-            } else {
+            if ($url) {
               Write-Host '=========================================================='
-              Write-Host ' BUKA DAN AUTHORIZE LINK INI (login ke akun Tailscale):'
-              Write-Host "    $url"
+              Write-Host " KLIK LINK INI (login Tailscale): $url"
               Write-Host '=========================================================='
               Write-Host "::notice title=KLIK LINK LOGIN TAILSCALE::$url"
             }
-            $ip = Wait-IP 900   # tunggu approve maks 30 menit
+            $ip = Wait-IP 900
           }
-
           if ($ip -match '^100\.') {
             "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
             Write-Host "SUKSES! IP Tailscale: $ip"
-          } else {
-            Write-Host 'Belum terhubung (auth key invalid / link belum di-approve).'
-            & $ts status 2>$null | Out-Host
-          }
+          } else { Write-Host 'Belum terhubung.'; & $ts status 2>$null | Out-Host }
           exit 0
 
       # ------------------------------------------------------------
-      # 5. Exit node (opsional, biar IP internet = IP rumah kamu)
+      # 3. Install + login Tailscale (Linux)
       # ------------------------------------------------------------
-      - name: Set exit node (opsional)
-        shell: powershell
-        env:
-          EXIT_NODE: ${{ inputs.EXIT_NODE }}
+      - name: Install Tailscale (Linux)
+        if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
+        shell: bash
         run: |
-          if ($env:EXIT_NODE) {
-            Write-Host "Pasang exit node -> $env:EXIT_NODE"
-            & 'C:\Program Files\Tailscale\tailscale.exe' set --exit-node=$env:EXIT_NODE 2>&1 | Out-Host
-            Start-Sleep -Seconds 5
-          } else {
-            Write-Host 'EXIT_NODE kosong - traffic internet tetap lewat IP datacenter. Login Google bisa minta verifikasi tambahan.'
-          }
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
+          # runner GitHub tidak punya systemd penuh -> jalankan userspace daemon
+          sudo nohup tailscaled --tun=userspace-networking --state=mem: >/tmp/tailscaled.log 2>&1 &
+          sleep 6
+          tailscale version || sudo tailscale version
+
+      - name: Login Tailscale (Linux)
+        if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
+        shell: bash
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          hostname="$(echo '${{ github.event.inputs.PC_NAME }}' | tr -cd 'A-Za-z0-9\-' | cut -c1-15)"
+          [ -z "$hostname" ] && hostname=Kall
+          ip=""
+          if [ -n "$TS_AUTHKEY" ]; then
+            echo 'Login otomatis via TS_AUTHKEY...'
+            sudo tailscale up --authkey "$TS_AUTHKEY" --hostname "$hostname" 2>&1 | head -5
+            for i in $(seq 1 150); do ip=$(sudo tailscale ip -4 2>/dev/null | head -1); case "$ip" in 100.*) break;; esac; sleep 2; done
+          fi
+          if [ -z "$ip" ] || ! case "$ip" in 100.*) true;; *) false;; esac; then
+            echo 'Mode interaktif: link login di bawah.'
+            (sudo tailscale up --hostname "$hostname" > /tmp/ts.log 2>&1 &)
+            for i in $(seq 1 150); do
+              url=$(grep -oE 'https://login\.tailscale\.com/[A-Za-z0-9._/-]+' /tmp/ts.log 2>/dev/null | head -1)
+              [ -n "$url" ] && break; sleep 1
+            done
+            if [ -n "$url" ]; then
+              echo '=========================================================='
+              echo " KLIK LINK INI (login Tailscale): $url"
+              echo '=========================================================='
+              echo "::notice title=KLIK LINK LOGIN TAILSCALE::$url"
+            fi
+            for i in $(seq 1 900); do ip=$(sudo tailscale ip -4 2>/dev/null | head -1); case "$ip" in 100.*) break;; esac; sleep 2; done
+          fi
+          if case "$ip" in 100.*) true;; *) false;; esac; then
+            echo "TS_IP=$ip" >> "$GITHUB_ENV"
+            echo "SUKSES! IP Tailscale: $ip"
+          else echo 'Belum terhubung.'; fi
 
       # ------------------------------------------------------------
-      # 6. Provision lengkap: PC name, wallpaper, tema, taskbar
-      #    transparan, Lightshot, driver & runtime, admin tertinggi,
-      #    optimasi, security longgar, sesi Google (opsional)
+      # 4. Exit node (Windows saja - di Linux userspace tidak didukung)
       # ------------------------------------------------------------
-      - name: Provision lengkap (provision.ps1)
+      - name: Set exit node (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' && github.event.inputs.EXIT_NODE != '' }}
         shell: powershell
+        run: |
+          Write-Host "Pasang exit node -> ${{ github.event.inputs.EXIT_NODE }}"
+          & 'C:\Program Files\Tailscale\tailscale.exe' set --exit-node=${{ github.event.inputs.EXIT_NODE }} 2>&1 | Out-Host
+
+      # ------------------------------------------------------------
+      # 5. Provisioning (mode Cepat = langsung siap, mode Full = apps)
+      #    continue-on-error: kalau macet/gagal, kredensial tetap dilaporkan
+      # ------------------------------------------------------------
+      - name: Provisioning (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' }}
+        shell: powershell
+        continue-on-error: true
+        timeout-minutes: 25
         env:
-          PC_NAME: ${{ inputs.PC_NAME }}
-          WALLPAPER_URL: ${{ inputs.WALLPAPER_URL }}
+          PC_NAME: ${{ github.event.inputs.PC_NAME }}
+          PROVISION_MODE: ${{ github.event.inputs.PROVISION_MODE }}
+          WALLPAPER_URL: ${{ github.event.inputs.WALLPAPER_URL }}
           WALLPAPER_DEFAULT: 'https://api-asset.haekal.web.id/a/xyspace-assets%2Fapproved%2FXyCloudStore_rental_pc_morphing_16x9'
-          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Continue'
           & "$env:GITHUB_WORKSPACE\provision.ps1"
 
+      - name: Provisioning (Linux Ubuntu)
+        if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          PC_NAME: ${{ github.event.inputs.PC_NAME }}
+          PROVISION_MODE: ${{ github.event.inputs.PROVISION_MODE }}
+          WALLPAPER_URL: ${{ github.event.inputs.WALLPAPER_URL }}
+          WALLPAPER_DEFAULT: 'https://api-asset.haekal.web.id/a/xyspace-assets%2Fapproved%2FXyCloudStore_rental_pc_morphing_16x9'
+        run: |
+          set -e
+          bash "$GITHUB_WORKSPACE/provision-linux.sh"
+
       # ------------------------------------------------------------
-      # 7. Kirim info koneksi (terenkripsi) ke runtime/state.json
-      #    supaya web panel tahu IP + password tanpa buka log Actions.
-      #    Enkripsi: AES-256-CBC, kunci dari secret PANEL_KEY.
+      # 6. Lapor status ke panel (terenkripsi) - per-OS
       # ------------------------------------------------------------
-      - name: Laporkan status ke panel (terenkripsi)
+      - name: Laporkan status (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
         env:
           PANEL_KEY: ${{ secrets.PANEL_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if (-not $env:PANEL_KEY) {
-            Write-Host '::warning::Secret PANEL_KEY belum diset - panel tidak bisa baca info koneksi otomatis. Cek log Actions untuk IP/password.'
-            exit 0
-          }
-          if (-not $env:TS_IP) {
-            Write-Host '::warning::Tailscale belum dapat IP - state tidak dikirim. Cek log Actions.'
-            exit 0
-          }
-
+          if (-not $env:PANEL_KEY) { Write-Host '::warning::PANEL_KEY belum diset - cek log Actions untuk IP/password.'; exit 0 }
+          if (-not $env:TS_IP) { Write-Host '::warning::Belum dapat IP Tailscale - state tidak dikirim.'; exit 0 }
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $dns = ''
-          try {
-            $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.')
-          } catch {}
-
+          try { $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch {}
           $payload = [ordered]@{
-            v             = 1
-            ip            = $env:TS_IP
-            dns           = $dns
-            user          = 'runneradmin'
-            pass          = $env:RDP_PASS
-            machine       = '${{ inputs.PC_NAME }}'
+            v = 1; os = 'Windows'; ip = $env:TS_IP; dns = $dns; user = 'runneradmin'
+            pass = $env:RDP_PASS; machine = '${{ github.event.inputs.PC_NAME }}'
             provisionedAt = (Get-Date).ToUniversalTime().ToString('o')
-            expiresAt     = (Get-Date).ToUniversalTime().AddMinutes(330).ToString('o')  # 5,5 jam aman di bawah limit 6 jam
+            expiresAt = (Get-Date).ToUniversalTime().AddMinutes(330).ToString('o')
           } | ConvertTo-Json -Compress
-
-          # hex -> byte[] (PS 5.1 tidak punya FromHexString)
           $hex = $env:PANEL_KEY
-          if ($hex.Length % 2 -ne 0) { throw 'PANEL_KEY harus hex genap' }
           $key = New-Object byte[] ($hex.Length / 2)
-          for ($i = 0; $i -lt $key.Length; $i++) {
-            $key[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
-          }
-
-          $aes = [System.Security.Cryptography.Aes]::Create()
-          $aes.Key = $key
-          $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-          $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-          $aes.GenerateIV()
-          $enc = $aes.CreateEncryptor()
-          $plain = [System.Text.Encoding]::UTF8.GetBytes($payload)
+          for ($i = 0; $i -lt $key.Length; $i++) { $key[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16) }
+          $aes = [System.Security.Cryptography.Aes]::Create(); $aes.Key = $key; $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+          $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7; $aes.GenerateIV()
+          $enc = $aes.CreateEncryptor(); $plain = [System.Text.Encoding]::UTF8.GetBytes($payload)
           $cipher = $enc.TransformFinalBlock($plain, 0, $plain.Length)
           $blob = 'v1.' + [Convert]::ToBase64String($aes.IV) + '.' + [Convert]::ToBase64String($cipher)
-
           $repo = $env:GITHUB_REPOSITORY
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'rdp-kall'; Accept = 'application/vnd.github+json' }
           $path = 'runtime/state.json'
-
           $sha = $null
-          try {
-            $cur = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Get
-            $sha = $cur.sha
-          } catch {}
-
-          $put = @{ message = 'update state run (encrypted)'; content = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blob)) }
+          try { $cur = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Get; $sha = $cur.sha } catch {}
+          $put = @{ message = 'update state (encrypted)'; content = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blob)) }
           if ($sha) { $put.sha = $sha }
-          try {
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Put -Body ($put | ConvertTo-Json -Compress) | Out-Null
-            Write-Host 'Status terenkripsi terkirim ke runtime/state.json'
-          } catch {
-            Write-Host "::warning::Gagal kirim state: $($_.Exception.Message)"
-          }
+          try { Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Put -Body ($put | ConvertTo-Json -Compress) | Out-Null; Write-Host 'State terkirim.' } catch { Write-Host "::warning::Gagal kirim state: $($_.Exception.Message)" }
+
+      - name: Laporkan status (Linux Ubuntu)
+        if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
+        shell: bash
+        env:
+          PANEL_KEY: ${{ secrets.PANEL_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if [ -z "$PANEL_KEY" ]; then echo '::warning::PANEL_KEY belum diset'; exit 0; fi
+          if [ -z "$TS_IP" ]; then echo '::warning::Belum dapat IP Tailscale'; exit 0; fi
+          DNS=$(sudo tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || echo "")
+          PAYLOAD="{\"v\":1,\"os\":\"Linux\",\"ip\":\"$TS_IP\",\"dns\":\"$DNS\",\"user\":\"runner\",\"pass\":\"$RDP_PASS\",\"machine\":\"${{ github.event.inputs.PC_NAME }}\",\"provisionedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"expiresAt\":\"$(date -u -d '+330 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+330M +%Y-%m-%dT%H:%M:%SZ)\"}"
+          IV=$(openssl rand -hex 16)
+          IVB64=$(printf '%s' "$IV" | xxd -r -p | base64 -w0)
+          CT=$(printf '%s' "$PAYLOAD" | openssl enc -aes-256-cbc -K "$PANEL_KEY" -iv "$IV" -base64 -A)
+          BLOB="v1.$IVB64.$CT"
+          REPO="$GITHUB_REPOSITORY"
+          SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/contents/runtime/state.json" | python3 -c "import json,sys;print(json.load(sys.stdin).get('sha',''))" 2>/dev/null || echo "")
+          B64=$(printf '%s' "$BLOB" | base64 -w0)
+          BODY=$(python3 - "$SHA" "$B64" <<'PY'
+          import json,sys
+          sha,b64=sys.argv[1],sys.argv[2]
+          d={"message":"update state (encrypted)","content":b64}
+          if sha:d["sha"]=sha
+          print(json.dumps(d))
+          PY
+          )
+          curl -s -X PUT -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -d "$BODY" "https://api.github.com/repos/$REPO/contents/runtime/state.json" -o /dev/null -w 'State terkirim (HTTP %{http_code})\n'
 
       # ------------------------------------------------------------
-      # 8. Keep-alive (biar VM tetap hidup sampai 6 jam / di-cancel panel)
+      # 7. Keep-alive
       # ------------------------------------------------------------
-      - name: Keep-alive
+      - name: Keep-alive (Windows)
+        if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
         run: |
-          while ($true) {
-            Write-Host "$(Get-Date -Format u) - hidup | IP: $env:TS_IP"
-            Start-Sleep -Seconds 300
-          }
+          while ($true) { Write-Host "$(Get-Date -Format u) - hidup | IP: $env:TS_IP"; Start-Sleep -Seconds 300 }
+
+      - name: Keep-alive (Linux Ubuntu)
+        if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
+        shell: bash
+        run: |
+          while true; do echo "$(date -u) - hidup | IP: $TS_IP"; sleep 300; done

@@ -41,6 +41,18 @@ const I = {
   down: <svg key="d" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" /></svg>
 }
 
+
+/* payload standar dari form (dibaca saat submit) */
+function getLaunchConfig() {
+  return {
+    pcName: document.getElementById('pcName') ? document.getElementById('pcName').value || 'Kall' : 'Kall',
+    exitNode: document.getElementById('exitNode') ? document.getElementById('exitNode').value || '' : '',
+    os: document.getElementById('osSelect') ? document.getElementById('osSelect').value : 'Windows',
+    provision: document.getElementById('modeSelect') ? document.getElementById('modeSelect').value : 'Cepat',
+    wallpaperUrl: ''
+  }
+}
+
 /* ================= App ================= */
 export default function App() {
   const [cfg, setCfg] = useState(null)
@@ -247,16 +259,12 @@ function StatusHero({ status, st, logLine }) {
   const doStart = async () => {
     setBusy('start'); setErr(null)
     try {
-      let wallUrl = ''
-      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) wallUrl = w.url } catch { /* noop */ }
+      const launch = getLaunchConfig()
+      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) launch.wallpaperUrl = w.url } catch { /* noop */ }
       await api('/api/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pcName: document.getElementById('pcName') ? document.getElementById('pcName').value || 'Kall' : 'Kall',
-          exitNode: document.getElementById('exitNode') ? document.getElementById('exitNode').value || '' : '',
-          wallpaperUrl: wallUrl
-        })
+        body: JSON.stringify(launch)
       })
       logLine('info', 'perintah MULAI dikirim ke GitHub Actions')
       logLine('wait', 'menunggu runner booting (3-6 menit) ...')
@@ -419,14 +427,12 @@ function ConfigPanel({ cfg, logLine }) {
     if (!askPin()) return
     setBusy('start'); setMsg(null)
     try {
-      let wallUrl = ''
-      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) wallUrl = w.url } catch { /* noop */ }
-      const elN = document.getElementById('pcName')
-      const elE = document.getElementById('exitNode')
+      const launch = getLaunchConfig()
+      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) launch.wallpaperUrl = w.url } catch { /* noop */ }
       await api('/api/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pcName: elN ? elN.value || 'Kall' : 'Kall', exitNode: elE ? elE.value : '', wallpaperUrl: wallUrl })
+        body: JSON.stringify(launch)
       })
       logLine('info', 'perintah MULAI dikirim lewat kartu konfigurasi')
       logLine('wait', 'menunggu runner booting (3-6 menit) ...')
@@ -469,6 +475,22 @@ function ConfigPanel({ cfg, logLine }) {
           kamu, bukan IP datacenter. Krusial biar <b>login Google tidak kena verifikasi berulang</b>.
         </div>
       </details>
+      <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+        <div style={{ flex: 1 }}>
+          <label className="lab">SISTEM OPERASI VM</label>
+          <select id="osSelect" className="sel" defaultValue="Windows">
+            <option value="Windows">Windows (Server 2022)</option>
+            <option value="Linux (Ubuntu)">Linux Ubuntu (XFCE)</option>
+          </select>
+        </div>
+        <div style={{ flex: 1 }}>
+          <label className="lab">PROVISIONING</label>
+          <select id="modeSelect" className="sel" defaultValue="Cepat">
+            <option value="Cepat">Cepat (tanpa aplikasi)</option>
+            <option value="Full">Full (browser &amp; tools)</option>
+          </select>
+        </div>
+      </div>
       <div className="rowbtns">
         <button className="btn primary" disabled={busy !== null} onClick={doStart}>
           {busy === 'start' ? <span className="spin" /> : I.power}
