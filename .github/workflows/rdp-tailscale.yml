@@ -5,14 +5,21 @@ name: RDP via Tailscale (Windows, tanpa API key)
 #  - Tanpa OAuth / API key / client secret
 #  - Cukup klik link login yang muncul di log saat Actions jalan
 #  - RDP native Windows (bisa lewat mstsc / aplikasi RDP apa pun)
+#
+#  + TAMBAHAN: tema ungu (dark) + wallpaper otomatis
 # ============================================================
 
 on:
   workflow_dispatch:
+    inputs:
+      EXIT_NODE:
+        description: 'Tailscale exit node (IP 100.x atau nama device) supaya IP keluar = IP kamu (rumah/VPS), bukan datacenter GitHub. Kosongkan kalau gak punya.'
+        required: false
+        default: ''
 
 concurrency:
   group: rdp-tailscale
-  cancel-in-progress: true
+  cancel-in-progress: true   # NOTE: kalau kamu trigger lagi saat masih jalan, run yang lama di-cancel
 
 jobs:
   rdp:
@@ -130,7 +137,97 @@ jobs:
           Write-Host "::notice title=RDP Siap::IP = ${env:TS_IP}:3389 | user = runneradmin"
 
       # ------------------------------------------------------
-      # 5. Keep-alive
+      # 5. (OPSIONAL) Exit node + siapkan browser
+      #    Biar IP yang dilihat Google = IP rumah/VPS kamu,
+      #    bukan IP datacenter GitHub (Azure) yang suka kena flag.
+      # ------------------------------------------------------
+      - name: Exit node Tailscale + tips login Google (opsional)
+        shell: powershell
+        run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+
+          # Pasang exit node kalau diisi (contoh: 100.x.y.z atau nama device)
+          if ($env:EXIT_NODE) {
+            Write-Host "Pasang exit node -> $env:EXIT_NODE"
+            & $ts set --exit-node=$env:EXIT_NODE 2>&1 | Out-Host
+            Start-Sleep -Seconds 5
+            & $ts status 2>$null | Out-Host
+          } else {
+            Write-Host "EXIT_NODE kosong -> traffic browser tetap lewat IP GitHub/Azure."
+            Write-Host "Kalau login Google kena 'unusual activity', isi input EXIT_NODE"
+            Write-Host "dengan IP perangkat Tailscale kamu (HP/PC rumah) yang aktif exit node."
+          }
+
+          # Pastikan Chrome ada (biasanya udah keinstall di runner)
+          if (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") {
+            Write-Host "Chrome tersedia"
+          } else {
+            Write-Host "Chrome tidak ditemukan (pakai Edge saja)"
+          }
+
+          Write-Host "======================================================"
+          Write-Host "  TIPS BIAR LOGIN GOOGLE GA KENA FLAG:"
+          Write-Host "  1. Pakai exit node (IP rumah kamu) - PALING PENTING"
+          Write-Host "  2. Login lewat browser biasa, JANGAN incognito"
+          Write-Host "  3. Aktifkan 2FA / passkey di akun Google-nya"
+          Write-Host "  4. Saat muncul 'verify it's you', konfirmasi aja 1x"
+          Write-Host "  5. Jangan login-logout berulang dari IP baru"
+          Write-Host "======================================================"
+
+      # ------------------------------------------------------
+      # 6. TEMA UNGU (dark + aksen) + WALLPAPER
+      # ------------------------------------------------------
+      - name: Set tema ungu + wallpaper
+        shell: powershell
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+          # ===== 1) TEMA: dark mode + aksen UNGU (#8B5CF6) =====
+          $pers = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+          New-Item -Path $pers -Force | Out-Null
+          Set-ItemProperty -Path $pers -Name AppsUseLightTheme    -Value 0 -Type DWord
+          Set-ItemProperty -Path $pers -Name SystemUsesLightTheme -Value 0 -Type DWord
+          Set-ItemProperty -Path $pers -Name ColorPrevalence      -Value 1 -Type DWord
+          Set-ItemProperty -Path $pers -Name EnableTransparency   -Value 0 -Type DWord
+
+          # Aksen ungu #8B5CF6 -> format ABGR 0xAABBGGRR = 0xFFF65C8B
+          $dwm = 'HKCU:\Software\Microsoft\Windows\DWM'
+          New-Item -Path $dwm -Force | Out-Null
+          Set-ItemProperty -Path $dwm -Name AccentColor           -Value 4294335627 -Type DWord  # 0xFFF65C8B
+          Set-ItemProperty -Path $dwm -Name ColorizationColor     -Value 3304479883 -Type DWord  # 0xC4F65C8B
+          Set-ItemProperty -Path $dwm -Name ColorizationAfterglow -Value 3304479883 -Type DWord
+          Write-Host "Tema ungu (dark) aktif"
+
+          # ===== 2) WALLPAPER =====
+          $img = "$env:USERPROFILE\wallpaper.jpg"
+          $urls = @(
+            'https://api-asset.haekal.web.id/a/xyspace-assets%2Fapproved%2FXyCloudStore_rental_pc_morphing_16x9',
+            'https://cdn.haekal.web.id/image/upload/f_auto,q_auto:good,dpr_auto/v1788811715/xyspace-assets/approved/XyCloudStore_rental_pc_morphing_16x9.png'
+          )
+          $ok = $false
+          foreach ($u in $urls) {
+            try {
+              Invoke-WebRequest -Uri $u -OutFile $img -UseBasicParsing
+              if ((Test-Path $img) -and (Get-Item $img).Length -gt 10000) { $ok = $true; break }
+            } catch {
+              Write-Host "Gagal download $u -> $($_.Exception.Message)"
+            }
+          }
+
+          if ($ok) {
+            $desk = 'HKCU:\Control Panel\Desktop'
+            Set-ItemProperty -Path $desk -Name Wallpaper      -Value $img
+            Set-ItemProperty -Path $desk -Name WallpaperStyle -Value '10'   # 10 = Fill (isi penuh)
+            Set-ItemProperty -Path $desk -Name TileWallpaper  -Value '0'
+            RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters 1, True
+            Write-Host "Wallpaper OK -> $img"
+          } else {
+            Write-Host "::warning::Wallpaper gagal diunduh, RDP tetap bisa dipakai"
+          }
+
+      # ------------------------------------------------------
+      # 7. Keep-alive
       # ------------------------------------------------------
       - name: Keep-alive
         shell: powershell
