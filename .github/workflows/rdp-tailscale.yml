@@ -64,6 +64,8 @@ jobs:
       - name: Aktifkan RDP (Windows)
         if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
@@ -81,6 +83,8 @@ jobs:
       - name: Siapkan akses remote (Linux Ubuntu - xrdp)
         if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
         shell: bash
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           set -e
           if [ -n "$RDP_PASSWORD" ]; then PASS="$RDP_PASSWORD"; else
