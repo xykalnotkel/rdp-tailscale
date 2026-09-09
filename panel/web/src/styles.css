@@ -72,11 +72,13 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .hero { position: relative; overflow: hidden; transition: border-color .3s; }
 .hero.on { border-color: #fff; }
 .hero.wait { border-color: #8f8f8f; }
+.hero.booting { border-color: #8f8f8f; }
 .hero.off { border-color: #262626; }
 .state-top { display: flex; align-items: center; gap: 11px; margin-bottom: 15px; }
 .pulse { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .hero.on .pulse { background: #fff; box-shadow: 0 0 12px rgba(255,255,255,.9); animation: blink 1.6s infinite; }
 .hero.wait .pulse { border: 1.5px solid #c9c9c9; background: transparent; animation: blink 1s infinite; }
+.hero.booting .pulse { border: 1.5px solid #c9c9c9; background: transparent; animation: blink 1s infinite; }
 .hero.off .pulse { border: 1.5px solid #444; background: transparent; }
 .hero.setup .pulse { background: #d8d8d8; }
 @keyframes blink { 50% { opacity: .25; } }
@@ -194,6 +196,7 @@ summary:hover { color: #fff; }
 .logline { white-space: pre-wrap; word-break: break-word; }
 .logline .lt { color: #4c4c4c; }
 .logline .lup { color: #fff; font-weight: 700; }
+.logline .lv { min-width: 88px; display: inline-block; letter-spacing: .4px; }
 .logline .ldown { color: #7d7d7d; font-weight: 700; }
 .logline .lwait { color: #c9c9c9; font-weight: 700; }
 .logline .linfo { color: #a3a3a3; font-weight: 600; }

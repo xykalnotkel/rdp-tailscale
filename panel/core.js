@@ -51,6 +51,31 @@ async function gh(url, opts = {}) {
   return data;
 }
 
+
+// enkripsi payload -> blob v1.iv.ct (AES-256-CBC)
+function encryptPayload(obj) {
+  if (!PANEL_KEY) throw new Error('PANEL_KEY_NOT_SET');
+  const key = Buffer.from(PANEL_KEY, 'hex');
+  const iv = crypto.randomBytes(16);
+  const c = crypto.createCipheriv('aes-256-cbc', key, iv);
+  const ct = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
+  return 'v1.' + iv.toString('base64') + '.' + ct.toString('base64');
+}
+
+// tulis state ke repo (dipakai untuk kosongkan state saat start/cancel)
+async function writeState(obj) {
+  if (!PANEL_KEY || !TOKEN) return;
+  const blob = encryptPayload(obj);
+  await putRepoFile('runtime/state.json', Buffer.from(blob).toString('base64'), 'update state (panel)');
+}
+async function clearState({ starting = false } = {}) {
+  const past = new Date(Date.now() - 1000);
+  await writeState({
+    v: 1, ip: '', dns: '', user: '', pass: '', machine: '',
+    starting, provisionedAt: new Date().toISOString(), expiresAt: past.toISOString(),
+  });
+}
+
 function decryptBlob(blob) {
   if (!PANEL_KEY) throw new Error('PANEL_KEY_NOT_SET');
   if (!blob || !blob.startsWith('v1.')) throw new Error('BAD_BLOB');
@@ -122,6 +147,7 @@ async function handleState(req, res) {
       state: {
         ip: st.ip || '', dns: st.dns || '', user: st.user || 'runneradmin',
         pass: st.pass || '', machine: st.machine || '',
+        starting: !!st.starting,
         provisionedAt: st.provisionedAt || null, expiresAt: st.expiresAt || null,
         remainingSeconds: Math.max(0, Math.floor((exp - Date.now()) / 1000)),
       },
@@ -172,6 +198,8 @@ async function handleStart(req, res) {
     await gh(`${GH_API}/repos/${REPO}/actions/workflows/rdp-tailscale.yml/dispatches`, {
       method: 'POST', body: JSON.stringify({ ref: BRANCH, inputs }),
     });
+    // kosongkan state lama biar panel tidak nampilkan sesi basi
+    try { await clearState({ starting: true }) } catch (e) { /* non-fatal */ }
     return json(res, 200, { ok: true, message: 'Workflow dijalankan. VM siap sekitar 3-6 menit.' });
   } catch (e) {
     return json(res, 500, { ok: false, error: `Gagal trigger workflow: ${e.message}` });
@@ -190,6 +218,8 @@ async function handleCancel(req, res) {
     for (const run of runs) {
       try { await gh(`${GH_API}/repos/${REPO}/actions/runs/${run.id}/cancel`, { method: 'POST' }); } catch {}
     }
+    // bersihkan state biar panel tidak nampilkan sesi basi
+    try { await clearState({ starting: false }) } catch (e) { /* non-fatal */ }
     return json(res, 200, { ok: true, message: `Run ${runs.map((x) => '#' + x.run_number).join(', ')} di-stop.` });
   } catch (e) {
     return json(res, 200, { ok: false, error: `Gagal stop: ${e.message}` });

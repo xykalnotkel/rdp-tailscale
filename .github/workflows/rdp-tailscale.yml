@@ -59,6 +59,17 @@ jobs:
       - uses: actions/checkout@v4
 
       # ------------------------------------------------------------
+      # 0. Bersihkan state lama biar panel tidak nampilkan sesi basi
+      # ------------------------------------------------------------
+      - name: Tandai awal sesi (bersihkan state lama)
+        shell: bash
+        env:
+          PANEL_KEY: ${{ secrets.PANEL_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash "$GITHUB_WORKSPACE/tools/clear-state.sh" || true
+
+      # ------------------------------------------------------------
       # 1. Aktifkan RDP + set password (per-OS)
       # ------------------------------------------------------------
       - name: Aktifkan RDP (Windows)
@@ -228,14 +239,24 @@ jobs:
           exit 0
 
       # ------------------------------------------------------------
-      # 4. Exit node (Windows saja - di Linux userspace tidak didukung)
+      # 4. Exit node (opsional, Windows) - TIDAK BOLEH MENGGAGALKAN RUN
       # ------------------------------------------------------------
       - name: Set exit node (Windows)
         if: ${{ github.event.inputs.OS == 'Windows' && github.event.inputs.EXIT_NODE != '' }}
         shell: powershell
+        env:
+          EXIT_NODE: ${{ github.event.inputs.EXIT_NODE }}
         run: |
-          Write-Host "Pasang exit node -> ${{ github.event.inputs.EXIT_NODE }}"
-          & 'C:\Program Files\Tailscale\tailscale.exe' set --exit-node=${{ github.event.inputs.EXIT_NODE }} 2>&1 | Out-Host
+          $ErrorActionPreference = 'Continue'
+          Write-Host "Pasang exit node -> $env:EXIT_NODE"
+          & 'C:\Program Files\Tailscale\tailscale.exe' set --exit-node=$env:EXIT_NODE 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '::warning::Exit node GAGAL dipasang - run TETAP LANJUT tanpa exit node.'
+            Write-Host '::warning::Cek: (1) device sudah enable "Use as exit node" di https://login.tailscale.com/admin/machines (2) IP/nama device benar.'
+            Write-Host '::warning::Tips: di dashboard Tailscale, klik kanan/⋮ pada device -> aktifkan "Use as exit node".'
+          } else {
+            Write-Host 'Exit node OK - traffic internet lewat exit node.'
+          }
 
       # ------------------------------------------------------------
       # 5. Provisioning (mode Cepat = langsung siap, mode Full = apps)
@@ -288,7 +309,7 @@ jobs:
             v = 1; os = 'Windows'; ip = $env:TS_IP; dns = $dns; user = 'runneradmin'
             pass = $env:RDP_PASS; machine = '${{ github.event.inputs.PC_NAME }}'
             provisionedAt = (Get-Date).ToUniversalTime().ToString('o')
-            expiresAt = (Get-Date).ToUniversalTime().AddMinutes(330).ToString('o')
+            expiresAt = (Get-Date).ToUniversalTime().AddMinutes(350).ToString('o')
           } | ConvertTo-Json -Compress
           $hex = $env:PANEL_KEY
           $key = New-Object byte[] ($hex.Length / 2)
@@ -318,7 +339,7 @@ jobs:
           if [ -z "$PANEL_KEY" ]; then echo '::warning::PANEL_KEY belum diset'; exit 0; fi
           if [ -z "$TS_IP" ]; then echo '::warning::Belum dapat IP Tailscale'; exit 0; fi
           DNS=$(sudo tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || echo "")
-          PAYLOAD="{\"v\":1,\"os\":\"Linux\",\"ip\":\"$TS_IP\",\"dns\":\"$DNS\",\"user\":\"runner\",\"pass\":\"$RDP_PASS\",\"machine\":\"${{ github.event.inputs.PC_NAME }}\",\"provisionedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"expiresAt\":\"$(date -u -d '+330 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+330M +%Y-%m-%dT%H:%M:%SZ)\"}"
+          PAYLOAD="{\"v\":1,\"os\":\"Linux\",\"ip\":\"$TS_IP\",\"dns\":\"$DNS\",\"user\":\"runner\",\"pass\":\"$RDP_PASS\",\"machine\":\"${{ github.event.inputs.PC_NAME }}\",\"provisionedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"expiresAt\":\"$(date -u -d '+350 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+330M +%Y-%m-%dT%H:%M:%SZ)\"}"
           IV=$(openssl rand -hex 16)
           IVB64=$(printf '%s' "$IV" | xxd -r -p | base64 -w0)
           CT=$(printf '%s' "$PAYLOAD" | openssl enc -aes-256-cbc -K "$PANEL_KEY" -iv "$IV" -base64 -A)

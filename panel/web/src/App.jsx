@@ -82,10 +82,12 @@ export default function App() {
   }, [logs])
   useEffect(() => { logLine('info', 'panel dimuat - siap dikontrol') }, [logLine]) // eslint-disable-line
 
-  /* ----- polling state ----- */
-  const prevRunRef = useRef(null)
+  /* ----- polling state + status akurat (state & run digabung, anti-basi) ----- */
   const cfgRef = useRef(cfg)
   useEffect(() => { cfgRef.current = cfg }, [cfg])
+  const runsRef = useRef([])
+  const phaseRef = useRef('wait')
+  const [phase, setPhase] = useState('wait')
   useEffect(() => {
     let dead = false
     async function tick() {
@@ -93,21 +95,46 @@ export default function App() {
       try { d = await api('/api/state') } catch { return }
       if (dead) return
       setSt(d)
-      const on = !!(d && d.ok && d.running && d.state)
-      const was = !!(prevRunRef.current && prevRunRef.current.ok)
-      if (on && !was) logLine('up', 'PC HIDUP - sesi aktif (IP ' + (d.state.ip || '-') + ')')
-      if (!on && was) logLine('down', 'PC MATI - sesi berakhir')
-      if (on && d.state) {
-        const p = prevRunRef.current
-        if (p && p.state && (p.state.ip !== d.state.ip || p.state.pass !== d.state.pass)) logLine('up', 'kredensial sesi baru (IP ' + d.state.ip + ')')
-        prevRunRef.current = { ok: true, state: { ip: d.state.ip, pass: d.state.pass } }
-      } else prevRunRef.current = null
+      const live = !!(d && d.ok && d.running && d.state)
+      const stObj = live || (d && d.ok && d.state) ? (d.state || {}) : null
+      const starting = !!(stObj && stObj.starting)
+      const runsArr = runsRef.current || []
+      const inProg = runsArr.some((r) => r.status === 'in_progress' || r.status === 'queued' || r.status === 'waiting')
+      const latest = runsArr[0]
+      // state basi: state mengaku running tapi run terbaru sudah selesai/gagal/cancel SETELAH state dibuat
+      let stale = false
+      if (live && latest && !inProg && ['completed', 'cancelled', 'failure', 'timed_out', 'skipped'].includes(latest.status)) {
+        if (new Date(latest.created_at).getTime() > new Date(stObj.provisionedAt || 0).getTime()) stale = true
+      }
+      let next = 'off'
+      if (d && (d.error || !d.ok)) next = 'setup'
+      else if (starting || (inProg && !live)) next = 'booting'
+      else if (live && !stale) next = 'on'
+      else next = 'off'
+
+      const prev = phaseRef.current
+      if (next !== prev) {
+        if (next === 'on') logLine('up', 'PC HIDUP - sesi aktif (IP ' + ((stObj && stObj.ip) || '-') + ')')
+        else if (next === 'booting') logLine('wait', 'BOOTING - runner menyala, tunggu laporan kredensial')
+        else if (next === 'off' && prev === 'on') logLine('down', 'PC MATI - sesi berakhir / dibatalkan')
+        else if (next === 'off' && prev === 'booting') logLine('down', 'BOOTING GAGAL - run berhenti sebelum melapor')
+        else if (next === 'setup') logLine('down', 'panel butuh konfigurasi')
+        phaseRef.current = next
+        setPhase(next)
+      } else if (next === 'on' && stObj) {
+        // deteksi ganti sesi saat sama-sama hidup
+        if (lastIpRef.current && lastIpRef.current !== stObj.ip) {
+          logLine('up', 'sesi baru terdeteksi (IP ' + stObj.ip + ')')
+        }
+        lastIpRef.current = stObj.ip
+      }
       if (!cfgRef.current) api('/api/info').then((i) => { if (!dead) setCfg(i) }).catch(() => {})
     }
     tick()
     const id = setInterval(tick, 10000)
     return () => { dead = true; clearInterval(id) }
   }, [logLine])
+  const lastIpRef = useRef(null)
 
   /* ----- polling run + deteksi event baru ----- */
   const seenRunsRef = useRef(new Set())
@@ -118,7 +145,7 @@ export default function App() {
         const d = await api('/api/runs')
         if (dead) return
         if (d.ok && Array.isArray(d.runs)) {
-          setRuns(d.runs); setRunsErr(false)
+          setRuns(d.runs); runsRef.current = d.runs; setRunsErr(false)
           d.runs.slice().reverse().forEach((r) => {
             if (seenRunsRef.current.has(r.id)) return
             seenRunsRef.current.add(r.id)
@@ -141,7 +168,8 @@ export default function App() {
   }, [])
 
   const [selRun, setSelRun] = useState(null)
-  const status = !st ? 'wait' : (st.error || !st.ok) ? 'setup' : (st.running && st.state) ? 'on' : 'off'
+  // status tunggu selama belum ada data apa pun
+  const status = !st && phase === 'wait' ? 'wait' : phase
 
   return (
     <>
@@ -220,10 +248,11 @@ function Hero({ status, st, logLine, cfg }) {
   const [err, setErr] = useState(null)
   const [showPass, setShowPass] = useState(false)
   const pinNeeded = !!(cfg && cfg.config && cfg.config.hasAdminPin)
-  const labels = { on: 'PC HIDUP', off: 'PC OFF', wait: 'MENGHUBUNGI...', setup: 'SETUP' }
+  const labels = { on: 'PC HIDUP', off: 'PC MATI', wait: 'MENGHUBUNGI...', booting: 'BOOTING...', setup: 'SETUP' }
   const subs = {
     on: st && st.state ? 'sisa ' + fmtHM(st.state.remainingSeconds) : '',
-    off: 'tidak ada sesi berjalan', wait: 'menunggu respons server', setup: 'panel butuh konfigurasi'
+    off: 'tidak ada sesi berjalan', wait: 'menunggu respons server',
+    booting: 'runner GitHub menyala - tunggu 3-6 menit', setup: 'panel butuh konfigurasi'
   }
 
   const askPin = () => {
@@ -285,9 +314,15 @@ function Hero({ status, st, logLine, cfg }) {
       {status === 'setup' && (
         <div className="note warn" style={{ marginTop: 8 }}>{(st && st.info) || 'cek env server panel'}</div>
       )}
+      {status === 'booting' && (
+        <>
+          <div className="big">PC SEDANG BOOTING</div>
+          <div className="sub">Runner GitHub sedang menyala - kredensial akan muncul otomatis begitu sesi siap (3-6 menit). Pantau Log Actions untuk progres step.</div>
+        </>
+      )}
       {status === 'off' && (
         <>
-          <div className="big">DESKTOP MATI</div>
+          <div className="big">PC MATI</div>
           <div className="sub">Tekan Mulai untuk menyalakan PC remote. Booting 3-6 menit.</div>
         </>
       )}
@@ -346,13 +381,17 @@ function SessionLog({ logs, paused, setPaused, clear, copy, logBoxRef }) {
       </div>
       <div className="logbox" ref={logBoxRef}>
         {logs.length === 0 && <span className="logempty">Belum ada event...</span>}
-        {logs.map((l, i) => (
-          <div className="logline" key={i}>
-            <span className="lt">{l.t}</span>{'  '}
-            <span className={'lv ' + ({ up: 'lup', down: 'ldown', wait: 'lwait', info: 'linfo', ev: 'lev' }[l.k] || 'linfo')}>{l.k.toUpperCase()}</span>{'  '}
-            <span>{l.m}</span>
-          </div>
-        ))}
+        {logs.map((l, i) => {
+          const lb = { up: 'PC HIDUP', down: 'PC MATI', wait: 'BOOTING', info: 'INFO', ev: 'EVENT' }[l.k] || 'INFO'
+          const cl = { up: 'lup', down: 'ldown', wait: 'lwait', info: 'linfo', ev: 'lev' }[l.k] || 'linfo'
+          return (
+            <div className="logline" key={i}>
+              <span className="lt">{l.t}</span>{'  '}
+              <span className={'lv ' + cl}>{lb}</span>{'  '}
+              <span>{l.m}</span>
+            </div>
+          )
+        })}
       </div>
     </>
   )
@@ -536,7 +575,11 @@ function Config({ cfg, logLine }) {
         <summary>Opsi lanjutan</summary>
         <label className="lab">Exit Node Tailscale</label>
         <input type="text" id="exitNode" placeholder="100.x.x.x / nama device" />
-        <div className="hint">Isi IP perangkat Tailscale kamu supaya IP internet = IP rumah (bantu login Google).</div>
+        <div className="hint">
+          IP internet akan terlihat sebagai IP perangkat ini (bantu login Google / akun lain).
+          Penting: di dashboard Tailscale, device ini WAJIB sudah di-enable <b>"Use as exit node"</b>
+          (menu &hellip; pada device). Kalau belum, sesi tetap jalan tapi tanpa exit node.
+        </div>
       </details>
       <div className="rowbtns">
         <button className="btn primary" disabled={busy} onClick={start}>{busy === 's' ? <span className="spin" /> : I.power} Mulai</button>
