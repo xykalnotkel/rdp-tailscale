@@ -89,6 +89,21 @@ jobs:
           if (-not (Get-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue)) {
             Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
           }
+          # Longgarkan batas sesi biar tidak kena error "another connection" 0x5:
+          # 1) satu user boleh punya >1 sesi sekaligus (console + RDP)
+          # 2) limit koneksi dibuat longgar, NLA dimatikan (biar klien HP lancar)
+          $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+          New-Item -Path $tsPol -Force | Out-Null
+          Set-ItemProperty -Path $tsPol -Name 'fSingleSessionPerUser' -Value 0 -Type DWord
+          Set-ItemProperty -Path $tsPol -Name 'MaxInstanceCount' -Value 999999 -Type DWord
+          $rdpTcp = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          Set-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -Value 0 -Type DWord
+          Set-ItemProperty -Path $rdpTcp -Name 'SecurityLayer' -Value 0 -Type DWord
+          Set-ItemProperty -Path $rdpTcp -Name 'MinEncryptionLevel' -Value 1 -Type DWord
+          try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue } catch {}
+          Restart-Service TermService -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Write-Host 'Batas sesi dilonggarkan (multi-session per user, NLA off, RDP Users + runneradmin)'
           Write-Host 'RDP Windows siap - user: runneradmin'
 
       - name: Siapkan akses remote (Linux Ubuntu - xrdp)
