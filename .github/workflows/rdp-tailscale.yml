@@ -300,13 +300,17 @@ jobs:
           PANEL_KEY: ${{ secrets.PANEL_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = 'Continue'
           if (-not $env:PANEL_KEY) { Write-Host '::warning::PANEL_KEY belum diset - cek log Actions untuk IP/password.'; exit 0 }
-          if (-not $env:TS_IP) { Write-Host '::warning::Belum dapat IP Tailscale - state tidak dikirim.'; exit 0 }
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          # ambil IP live (jangan hanya andalkan env)
+          $ip = $env:TS_IP
+          if (-not $ip -or $ip -notmatch '^100\.') { $ip = (& $ts ip -4 2>$null | Out-String).Trim() }
+          if ($ip -notmatch '^100\.') { Write-Host '::warning::IP Tailscale belum tersedia - state tidak dikirim.'; exit 0 }
           $dns = ''
           try { $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch {}
           $payload = [ordered]@{
-            v = 1; os = 'Windows'; ip = $env:TS_IP; dns = $dns; user = 'runneradmin'
+            v = 1; os = 'Windows'; ip = $ip; dns = $dns; user = 'runneradmin'
             pass = $env:RDP_PASS; machine = '${{ github.event.inputs.PC_NAME }}'
             provisionedAt = (Get-Date).ToUniversalTime().ToString('o')
             expiresAt = (Get-Date).ToUniversalTime().AddMinutes(350).ToString('o')
@@ -322,11 +326,25 @@ jobs:
           $repo = $env:GITHUB_REPOSITORY
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'rdp-kall'; Accept = 'application/vnd.github+json' }
           $path = 'runtime/state.json'
-          $sha = $null
-          try { $cur = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Get; $sha = $cur.sha } catch {}
-          $put = @{ message = 'update state (encrypted)'; content = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blob)) }
-          if ($sha) { $put.sha = $sha }
-          try { Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Put -Body ($put | ConvertTo-Json -Compress) | Out-Null; Write-Host 'State terkirim.' } catch { Write-Host "::warning::Gagal kirim state: $($_.Exception.Message)" }
+          $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blob))
+          # tulis dengan retry + selalu ambil sha terbaru (anti race)
+          $ok2 = $false
+          for ($attempt = 1; $attempt -le 5 -and -not $ok2; $attempt++) {
+            try {
+              $sha = $null
+              try { $cur = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Get; $sha = $cur.sha } catch {}
+              $put = @{ message = 'update state (encrypted)'; content = $b64 }
+              if ($sha) { $put.sha = $sha }
+              Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/contents/$path" -Headers $headers -Method Put -Body ($put | ConvertTo-Json -Compress) -ContentType 'application/json' | Out-Null
+              Write-Host "State terkirim (percobaan $attempt). IP: $ip"
+              $ok2 = $true
+            } catch {
+              Write-Host "::warning::Kirim state gagal (percobaan $attempt): $($_.Exception.Message)"
+              if ($_.ErrorDetails -and $_.ErrorDetails.Message) { Write-Host "::warning::detail: $($_.ErrorDetails.Message)" }
+              Start-Sleep -Seconds 8
+            }
+          }
+          if (-not $ok2) { Write-Host '::warning::State GAGAL dikirim setelah 5 percobaan. IP: '"$ip"' / pass ada di secret RDP_PASSWORD.' }
 
       - name: Laporkan status (Linux Ubuntu)
         if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
@@ -347,7 +365,9 @@ jobs:
           REPO="$GITHUB_REPOSITORY"
           SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/contents/runtime/state.json" | python3 -c "import json,sys;print(json.load(sys.stdin).get('sha',''))" 2>/dev/null || echo "")
           B64=$(printf '%s' "$BLOB" | base64 -w0)
-          BODY=$(python3 - "$SHA" "$B64" <<'PY'
+          for i in 1 2 3 4 5; do
+            SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/contents/runtime/state.json" | python3 -c "import json,sys;print(json.load(sys.stdin).get('sha',''))" 2>/dev/null || echo "")
+            BODY=$(python3 - "$SHA" "$B64" <<'PY'
           import json,sys
           sha,b64=sys.argv[1],sys.argv[2]
           d={"message":"update state (encrypted)","content":b64}
@@ -355,7 +375,11 @@ jobs:
           print(json.dumps(d))
           PY
           )
-          curl -s -X PUT -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -d "$BODY" "https://api.github.com/repos/$REPO/contents/runtime/state.json" -o /dev/null -w 'State terkirim (HTTP %{http_code})\n'
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "$BODY" "https://api.github.com/repos/$REPO/contents/runtime/state.json")
+            if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then echo "State terkirim (percobaan $i). IP: $TS_IP"; break; fi
+            echo "::warning::Kirim state gagal (percobaan $i, HTTP $CODE)"
+            sleep 8
+          done
 
       # ------------------------------------------------------------
       # 7. Keep-alive

@@ -250,6 +250,42 @@ async function handleWallpaperCurrent(req, res) {
   return json(res, 200, { ok: true, url: txt ? txt.trim() : null });
 }
 
+
+// ---------------------------------------------------------------------------
+// Konfigurasi default panel (disimpan di repo: config/panel.json)
+// ---------------------------------------------------------------------------
+const DEFAULT_CONFIG = { pcName: 'Kall', os: 'Windows', provision: 'Cepat', exitNode: 'xykel' };
+
+async function handleConfigGet(req, res) {
+  let cfg = null;
+  const raw = await fetchRepoFile('config/panel.json');
+  if (raw) { try { cfg = JSON.parse(raw); } catch {} }
+  return json(res, 200, { ok: true, config: Object.assign({}, DEFAULT_CONFIG, cfg || {}) });
+}
+
+async function handleConfigSet(req, res) {
+  if (!TOKEN) return json(res, 400, { ok: false, error: 'GITHUB_TOKEN belum diset - tidak bisa simpan.' });
+  if (ADMIN_PIN && (req.headers['x-admin-pin'] || '').trim() !== ADMIN_PIN) {
+    return json(res, 401, { ok: false, error: 'PIN admin salah.' });
+  }
+  const body = await readBody(req, 32 * 1024);
+  let input = {};
+  try { input = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'body bukan JSON' }); }
+  const cur = { pcName: 'Kall', os: 'Windows', provision: 'Cepat', exitNode: '' };
+  try {
+    const raw = await fetchRepoFile('config/panel.json');
+    if (raw) Object.assign(cur, JSON.parse(raw));
+  } catch {}
+  const merged = {
+    pcName: String(input.pcName || cur.pcName || 'Kall').trim().slice(0, 15) || 'Kall',
+    os: String(input.os || cur.os || 'Windows').startsWith('Linux') ? 'Linux (Ubuntu)' : 'Windows',
+    provision: String(input.provision || cur.provision || 'Cepat') === 'Full' ? 'Full' : 'Cepat',
+    exitNode: String(input.exitNode !== undefined ? input.exitNode : (cur.exitNode || '')).trim().slice(0, 60),
+  };
+  await putRepoFile('config/panel.json', Buffer.from(JSON.stringify(merged, null, 2)).toString('base64'), 'simpan default panel');
+  return json(res, 200, { ok: true, config: merged, message: 'Default tersimpan.' });
+}
+
 // ---------------------------------------------------------------------------
 // Log Actions: ambil step + log mentah dari GitHub Actions (run terbaru)
 // ?run=<nomor|id> untuk run tertentu
@@ -313,6 +349,49 @@ async function handleInfo(req, res) {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// SSE - push state realtime (works on Node; Vercel memutus koneksi tiap
+// beberapa puluh detik tapi EventSource reconnect otomatis)
+// ---------------------------------------------------------------------------
+async function handleEvents(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('retry: 3000\n\n');
+  let closed = false;
+  req.on('close', () => { closed = true; });
+  const timer = setInterval(async () => {
+    if (closed) { clearInterval(timer); return; }
+    try {
+      const raw = await fetchRepoFile('runtime/state.json');
+      let out = { ok: true, running: false, state: null, ts: Date.now() };
+      if (!raw) out.info = REPO ? 'Belum ada run yang melapor.' : 'GITHUB_REPO belum diset.';
+      else if (!PANEL_KEY) { out.ok = false; out.error = 'PANEL_KEY_NOT_SET'; out.info = 'PANEL_KEY belum diset.'; }
+      else {
+        try {
+          const st = decryptBlob(raw.trim());
+          const exp = new Date(st.expiresAt).getTime();
+          out.running = Date.now() < exp;
+          out.state = {
+            ip: st.ip || '', dns: st.dns || '', user: st.user || 'runneradmin',
+            pass: st.pass || '', machine: st.machine || '', starting: !!st.starting,
+            provisionedAt: st.provisionedAt || null, expiresAt: st.expiresAt || null,
+            remainingSeconds: Math.max(0, Math.floor((exp - Date.now()) / 1000)),
+          };
+        } catch (e) { out.ok = false; out.error = 'BAD_STATE'; out.info = String(e.message); }
+      }
+      res.write('data: ' + JSON.stringify(out) + '\n\n');
+    } catch (e) { /* keep alive */ }
+  }, 4000);
+  // heartbeat
+  const hb = setInterval(() => { if (closed) { clearInterval(hb); return; } res.write(': ping\n\n'); }, 25000);
+  res.on('close', () => { closed = true; clearInterval(timer); clearInterval(hb); });
+}
+
 // ---------------------------------------------------------------------------
 // router utama (dipakai server.js & Vercel api/[slug].js)
 // ---------------------------------------------------------------------------
@@ -350,6 +429,9 @@ async function handler(req, res) {
     if (req.method === 'GET' && p === '/api/info') return handleInfo(req, res);
     if (req.method === 'GET' && p === '/api/wallpaper') return handleWallpaperCurrent(req, res);
     if (req.method === 'GET' && p === '/api/logs') return handleLogs(req, res);
+    if (req.method === 'GET' && p === '/api/events') return handleEvents(req, res);
+    if (req.method === 'GET' && p === '/api/config') return handleConfigGet(req, res);
+    if (req.method === 'POST' && p === '/api/config') return handleConfigSet(req, res);
     if (req.method === 'POST' && p === '/api/start') return handleStart(req, res);
     if (req.method === 'POST' && p === '/api/cancel') return handleCancel(req, res);
     if (req.method === 'POST' && p === '/api/wallpaper') return handleWallpaperUpload(req, res);
