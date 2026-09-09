@@ -1,7 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 
-/* ================= util API ================= */
+/* ============================================================
+   KALL DESKTOP - kontrol panel (React)
+   Log Sesi   : kejadian dari sisi panel (start/stop/up/down)
+   Log Actions: log mentah GitHub Actions + daftar step
+   ============================================================ */
+
 let PIN = sessionStorage.getItem('kall_pin') || ''
+const MAXLOG = 200
 
 async function api(path, opts = {}) {
   const o = { ...opts, headers: { ...(opts.headers || {}) } }
@@ -14,7 +20,7 @@ async function api(path, opts = {}) {
   return d
 }
 
-const fmtHM = (s) => (s <= 0 ? 'habis' : Math.floor(s / 3600) + ' jam ' + Math.floor((s % 3600) / 60) + ' menit')
+const fmtHM = (s) => (s <= 0 ? 'habis' : Math.floor(s / 3600) + 'j ' + Math.floor((s % 3600) / 60) + 'm')
 const nowStamp = () => {
   const d = new Date()
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((x) => String(x).padStart(2, '0')).join(':')
@@ -29,63 +35,57 @@ async function copyText(t) {
   }
 }
 
-/* ================= ikon ================= */
+/* ---------- ikon (stroke saja) ---------- */
 const I = {
-  monitor: <svg key="m" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="12" rx="2.4" /><path d="M8 20h8M12 16v4" /></svg>,
-  list: <svg key="l" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 4h16v13H4z" /><path d="M8 21h8M12 17v4" /></svg>,
-  clock: <svg key="c" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>,
-  chart: <svg key="g" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 17l6-6 4 4 6-8" /><path d="M14 7h6v6" /></svg>,
-  image: <svg key="i" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.4" /><circle cx="8.5" cy="8.5" r="1.6" /><path d="M21 15l-5-5-9 9" /></svg>,
-  shield: <svg key="s" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" /><path d="M9.5 12l1.8 1.8L15 10" /></svg>,
-  power: <svg key="p" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z" /></svg>,
-  down: <svg key="d" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" /></svg>
+  monitor: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>,
+  list: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 4h16v13H4z" /><path d="M8 21h8M12 17v4" /></svg>,
+  clock: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>,
+  chart: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 17l6-6 4 4 6-8" /><path d="M14 7h6v6" /></svg>,
+  image: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.6" /><path d="M21 15l-5-5-9 9" /></svg>,
+  shield: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" /><path d="M9.5 12l1.8 1.8L15 10" /></svg>,
+  power: <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z" /></svg>,
+  down: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" /></svg>
 }
 
-
-/* payload standar dari form (dibaca saat submit) */
-function getLaunchConfig() {
-  return {
-    pcName: document.getElementById('pcName') ? document.getElementById('pcName').value || 'Kall' : 'Kall',
-    exitNode: document.getElementById('exitNode') ? document.getElementById('exitNode').value || '' : '',
-    os: document.getElementById('osSelect') ? document.getElementById('osSelect').value : 'Windows',
-    provision: document.getElementById('modeSelect') ? document.getElementById('modeSelect').value : 'Cepat',
-    wallpaperUrl: ''
-  }
-}
-
-/* ================= App ================= */
+/* ============================================================ App */
 export default function App() {
   const [cfg, setCfg] = useState(null)
   const [st, setSt] = useState(null)
   const [runs, setRuns] = useState([])
   const [runsErr, setRunsErr] = useState(false)
-  const [wall, setWall] = useState(null)
 
-  const cfgRef = useRef(cfg)
-  useEffect(() => { cfgRef.current = cfg }, [cfg])
-
+  /* ----- log sesi ----- */
   const [logs, setLogs] = useState(() => loadLogs())
   const logsRef = useRef(logs)
   useEffect(() => { logsRef.current = logs }, [logs])
-  const [logPaused, setLogPaused] = useState(false)
+  const [paused, setPaused] = useState(false)
   const pausedRef = useRef(false)
-  useEffect(() => { pausedRef.current = logPaused }, [logPaused])
+  useEffect(() => { pausedRef.current = paused }, [paused])
   const logBoxRef = useRef(null)
 
   const logLine = useCallback((kind, msg) => {
-    logsRef.current = [...logsRef.current.slice(-249), { t: nowStamp(), k: kind, m: msg }]
-    try { localStorage.setItem('kall_logs', JSON.stringify(logsRef.current)) } catch { /* noop */ }
+    logsRef.current = [...logsRef.current.slice(-(MAXLOG - 1)), { t: nowStamp(), k: kind, m: msg }]
     if (!pausedRef.current) setLogs(logsRef.current)
   }, [])
 
+  // simpan ke localStorage (throttle 2.5s biar hemat)
   useEffect(() => {
-    logLine('info', 'panel dimuat - siap dikontrol')
+    const id = setTimeout(() => {
+      try { localStorage.setItem('kall_logs', JSON.stringify(logsRef.current)) } catch { /* noop */ }
+    }, 2500)
+    return () => clearTimeout(id)
+  }, [logs])
+
+  useEffect(() => {
     const box = logBoxRef.current
     if (box) box.scrollTop = box.scrollHeight
-  }, [logLine, logs])
+  }, [logs])
+  useEffect(() => { logLine('info', 'panel dimuat - siap dikontrol') }, [logLine]) // eslint-disable-line
 
-  /* ---------- polling status + info ---------- */
+  /* ----- polling state ----- */
   const prevRunRef = useRef(null)
+  const cfgRef = useRef(cfg)
+  useEffect(() => { cfgRef.current = cfg }, [cfg])
   useEffect(() => {
     let dead = false
     async function tick() {
@@ -93,29 +93,23 @@ export default function App() {
       try { d = await api('/api/state') } catch { return }
       if (dead) return
       setSt(d)
-      const isRunning = !!(d && d.ok && d.running && d.state)
-      const wasRunning = !!(prevRunRef.current && prevRunRef.current.ok)
-      if (isRunning && !wasRunning) logLine('up', 'PC HIDUP - sesi aktif (IP ' + (d.state.ip || '-') + ')')
-      if (!isRunning && wasRunning) logLine('down', 'PC MATI - sesi berakhir')
-      if (isRunning && d.state) {
+      const on = !!(d && d.ok && d.running && d.state)
+      const was = !!(prevRunRef.current && prevRunRef.current.ok)
+      if (on && !was) logLine('up', 'PC HIDUP - sesi aktif (IP ' + (d.state.ip || '-') + ')')
+      if (!on && was) logLine('down', 'PC MATI - sesi berakhir')
+      if (on && d.state) {
         const p = prevRunRef.current
-        if (p && p.state && (p.state.ip !== d.state.ip || p.state.pass !== d.state.pass)) {
-          logLine('up', 'kredensial sesi baru diterima (IP ' + d.state.ip + ')')
-        }
+        if (p && p.state && (p.state.ip !== d.state.ip || p.state.pass !== d.state.pass)) logLine('up', 'kredensial sesi baru (IP ' + d.state.ip + ')')
         prevRunRef.current = { ok: true, state: { ip: d.state.ip, pass: d.state.pass } }
-      } else {
-        prevRunRef.current = null
-      }
-      if (!cfgRef.current) {
-        api('/api/info').then((i) => { if (!dead) setCfg(i) }).catch(() => {})
-      }
+      } else prevRunRef.current = null
+      if (!cfgRef.current) api('/api/info').then((i) => { if (!dead) setCfg(i) }).catch(() => {})
     }
     tick()
     const id = setInterval(tick, 10000)
     return () => { dead = true; clearInterval(id) }
   }, [logLine])
 
-  /* ---------- polling riwayat run ---------- */
+  /* ----- polling run + deteksi event baru ----- */
   const seenRunsRef = useRef(new Set())
   useEffect(() => {
     let dead = false
@@ -124,93 +118,74 @@ export default function App() {
         const d = await api('/api/runs')
         if (dead) return
         if (d.ok && Array.isArray(d.runs)) {
-          setRuns(d.runs)
-          setRunsErr(false)
+          setRuns(d.runs); setRunsErr(false)
           d.runs.slice().reverse().forEach((r) => {
             if (seenRunsRef.current.has(r.id)) return
             seenRunsRef.current.add(r.id)
-            if (r.status === 'in_progress' || r.status === 'queued' || r.status === 'waiting') {
-              logLine('wait', 'run #' + r.run_number + ' mulai - runner booting (3-6 menit)')
-            } else if (r.status === 'completed') {
-              logLine('info', 'run #' + r.run_number + ' selesai (' + (r.conclusion || '-') + ')')
-            } else if (r.status === 'cancelled') {
-              logLine('down', 'run #' + r.run_number + ' dibatalkan')
-            }
+            if (r.status === 'in_progress' || r.status === 'queued' || r.status === 'waiting') logLine('wait', 'run #' + r.run_number + ' mulai - runner booting')
+            else if (r.status === 'completed') logLine('info', 'run #' + r.run_number + ' selesai (' + (r.conclusion || '-') + ')')
+            else if (r.status === 'cancelled') logLine('down', 'run #' + r.run_number + ' dibatalkan')
           })
-        } else {
-          setRunsErr(true)
-        }
-      } catch { /* poll berikutnya */ }
+        } else setRunsErr(true)
+      } catch { /* next */ }
     }
     tick()
     const id = setInterval(tick, 20000)
     return () => { dead = true; clearInterval(id) }
   }, [logLine])
 
-  /* ---------- wallpaper aktif ---------- */
+  /* ----- wallpaper aktif ----- */
+  const [wall, setWall] = useState(null)
   useEffect(() => {
     api('/api/wallpaper').then((d) => { if (d && d.ok && d.url) setWall(d.url) }).catch(() => {})
   }, [])
 
-  const status = !st ? 'wait'
-    : (st.error || !st.ok) ? 'setup'
-      : (st.running && st.state) ? 'on' : 'off'
+  const [selRun, setSelRun] = useState(null)
+  const status = !st ? 'wait' : (st.error || !st.ok) ? 'setup' : (st.running && st.state) ? 'on' : 'off'
 
   return (
     <>
       <div className="bg" />
-      <div className="blob b1" /><div className="blob b2" /><div className="blob b3" />
       <div className="wrap">
         <Header cfg={cfg} />
         <div className="grid">
           <section>
-            <StatusHero status={status} st={st} logLine={logLine} />
-            <Card title="Log Sesi" icon={I.list}>
-              <LogPanel logs={logs} logPaused={logPaused} setLogPaused={setLogPaused}
-                clearAll={() => { logsRef.current = []; setLogs([]) }}
-                copyAll={() => copyText(logs.map((l) => l.t + ' ' + l.k.toUpperCase() + ' ' + l.m).join('\n'))}
+            <Hero status={status} st={st} logLine={logLine} cfg={cfg} />
+            <Card title="Log Sesi" icon={I.list} subtitle="kejadian dari sisi panel - mulai / berhenti / status">
+              <SessionLog logs={logs} paused={paused} setPaused={setPaused}
+                clear={() => { logsRef.current = []; setLogs([]) }}
+                copy={() => copyText(logs.map((l) => l.t + '  ' + l.k.toUpperCase() + '  ' + l.m).join('\n'))}
                 logBoxRef={logBoxRef} />
             </Card>
+            <ActionsLogCard selRun={selRun} />
             <Card title="Riwayat Run" icon={I.clock}>
-              <ul className="ulist">
-                {runsErr && <li className="dim">Token panel belum aktif untuk riwayat run (repo publik butuh login).</li>}
-                {!runsErr && runs.length === 0 && <li className="dim">Belum ada run.</li>}
-                {!runsErr && runs.slice(0, 6).map((r) => (
-                  <li key={r.id}>
-                    <span className={pillCls(r)}>{pillTxt(r)}</span>
-                    <span className="t">{r.display_title || 'RDP run'}</span>
-                    <span className="mono dim small">#{r.run_number} {shortWhen(r.created_at)}</span>
-                  </li>
-                ))}
-              </ul>
+              <RunsList runs={runs} runsErr={runsErr} onLog={setSelRun} />
             </Card>
           </section>
           <section>
             <Card title="Konfigurasi Sesi" icon={I.chart}>
-              <ConfigPanel cfg={cfg} logLine={logLine} />
+              <Config cfg={cfg} logLine={logLine} />
             </Card>
-            <Card title="Wallpaper Custom" icon={I.image}>
-              <WallpaperPanel wall={wall} setWall={setWall} logLine={logLine} />
+            <Card title="Wallpaper" icon={I.image}>
+              <Wallpaper wall={wall} setWall={setWall} logLine={logLine} />
             </Card>
             <Card title="Status Panel" icon={I.shield}>
-              <InfoPanel cfg={cfg} st={st} />
+              <Info cfg={cfg} st={st} />
             </Card>
           </section>
         </div>
-        <div className="footer">
-          KALL DESKTOP - RDP via GitHub Actions + Tailscale
-          <br />Sesi otomatis berakhir setelah 6 jam. Semua kontrol dari panel ini - tanpa buka GitHub Actions.
-        </div>
+        <div className="footer">KALL DESKTOP - GitHub Actions + Tailscale - sesi maks 6 jam</div>
       </div>
     </>
   )
 }
 
-/* ================= komponen ================= */
-function Card({ title, icon, children }) {
+/* ============================================================ komponen */
+function Card({ title, icon, subtitle, children }) {
   return (
     <div className="card">
       <h2>{icon}<span>{title}</span></h2>
+      {subtitle && <div className="subtitle">{subtitle}</div>}
       {children}
     </div>
   )
@@ -219,188 +194,162 @@ function Card({ title, icon, children }) {
 function Header({ cfg }) {
   const [online, setOnline] = useState(true)
   useEffect(() => {
-    const id = setInterval(() => {
-      fetch('/api/info').then((r) => setOnline(r.ok)).catch(() => setOnline(false))
-    }, 15000)
+    const id = setInterval(() => { fetch('/api/info').then((r) => setOnline(r.ok)).catch(() => setOnline(false)) }, 20000)
     return () => clearInterval(id)
   }, [])
   const repo = cfg && cfg.config ? cfg.config.repo : null
-  const dotCls = !online ? 'dot bad' : repo ? 'dot ok' : 'dot warn'
-  const txt = !online ? 'server panel tidak terjangkau' : repo ? repo + ' - panel online' : 'menghubungkan...'
+  const cls = !online ? 'dot bad' : repo ? 'dot ok' : 'dot warn'
+  const txt = !online ? 'offline' : repo ? repo : 'menghubungkan...'
   return (
     <header>
       <div className="brand">
         <div className="logo">{I.monitor}</div>
         <div>
-          <h1>KALL DESKTOP</h1>
-          <p>Remote Control Suite</p>
+          <h1>KALL<span>DESKTOP</span></h1>
+          <p>Remote Control</p>
         </div>
       </div>
-      <div className="chip"><span className={dotCls} /><span>{txt}</span></div>
+      <div className="chip"><span className={cls} /><span className="mono">{txt}</span></div>
     </header>
   )
 }
 
-function StatusHero({ status, st, logLine }) {
+/* ---------------- hero ---------------- */
+function Hero({ status, st, logLine, cfg }) {
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
-  const [passShown, setPassShown] = useState(false)
-  const cfg = null
-  void cfg
-  const pinNeeded = false
-  void pinNeeded
-
+  const [showPass, setShowPass] = useState(false)
+  const pinNeeded = !!(cfg && cfg.config && cfg.config.hasAdminPin)
   const labels = { on: 'PC HIDUP', off: 'PC OFF', wait: 'MENGHUBUNGI...', setup: 'SETUP' }
   const subs = {
-    on: st && st.state ? 'Sesi berjalan - ' + fmtHM(st.state.remainingSeconds) + ' tersisa' : '',
-    off: 'Tidak ada sesi berjalan', wait: 'Menunggu respons server', setup: 'panel butuh konfigurasi'
+    on: st && st.state ? 'sisa ' + fmtHM(st.state.remainingSeconds) : '',
+    off: 'tidak ada sesi berjalan', wait: 'menunggu respons server', setup: 'panel butuh konfigurasi'
   }
 
-  const doStart = async () => {
-    setBusy('start'); setErr(null)
+  const askPin = () => {
+    if (!pinNeeded) return true
+    const v = prompt('PIN admin:')
+    if (!v) return false
+    PIN = v; sessionStorage.setItem('kall_pin', v); return true
+  }
+
+  const launch = async (src) => {
+    if (!askPin()) return
+    setBusy(src); setErr(null)
     try {
-      const launch = getLaunchConfig()
-      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) launch.wallpaperUrl = w.url } catch { /* noop */ }
-      await api('/api/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(launch)
-      })
-      logLine('info', 'perintah MULAI dikirim ke GitHub Actions')
-      logLine('wait', 'menunggu runner booting (3-6 menit) ...')
-      setErr({ t: 'Workflow dijalankan. VM siap sekitar 3-6 menit.', ok: true })
+      const body = {
+        pcName: (document.getElementById('pcName') || {}).value || 'Kall',
+        exitNode: (document.getElementById('exitNode') || {}).value || '',
+        os: (document.getElementById('osSel') || {}).value || 'Windows',
+        provision: (document.getElementById('modeSel') || {}).value || 'Cepat',
+        wallpaperUrl: ''
+      }
+      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) body.wallpaperUrl = w.url } catch { /* noop */ }
+      await api('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      logLine('info', 'MULAI dikirim (' + body.os + ' / ' + body.provision + ')')
+      logLine('wait', 'runner booting 3-6 menit - pantau Log Actions')
+      setErr({ t: 'Workflow dijalankan. PC siap ~4-5 menit.', ok: true })
     } catch (e) {
       logLine('down', 'MULAI gagal: ' + e.message)
       setErr({ t: e.message, ok: false })
     } finally { setBusy(null) }
   }
-
-  const doStop = async () => {
-    if (!confirm('Yakin mau stop PC sekarang? Semua sesi desktop akan ditutup.')) return
+  const stop = async () => {
+    if (!confirm('Stop PC sekarang? Semua sesi desktop ditutup.')) return
+    if (!askPin()) return
     setBusy('stop'); setErr(null)
     try {
       const d = await api('/api/cancel', { method: 'POST' })
-      logLine('down', 'perintah STOP dikirim' + (d && d.message ? ' (' + d.message + ')' : ''))
+      logLine('down', 'STOP dikirim' + (d && d.message ? ' (' + d.message + ')' : ''))
       setErr({ t: (d && d.message) || 'Dimatikan.', ok: true })
     } catch (e) {
       logLine('down', 'STOP gagal: ' + e.message)
       setErr({ t: e.message, ok: false })
     } finally { setBusy(null) }
   }
-
-  const copyConn = async () => {
-    if (!st || !st.state) return
-    await copyText('Alamat: ' + st.state.ip + '\nUser: ' + st.state.user + '\nPass: ' + st.state.pass)
-    setErr({ t: 'Info koneksi disalin ke clipboard.', ok: true })
-  }
-
   const dlRdp = () => {
-    if (!st || !st.state) return
-    const ip = st.state.ip || ''
-    const user = st.state.user || 'runneradmin'
-    const rdp = [
-      'full address:s:' + ip, 'username:s:' + user, 'prompt for credentials:i:1',
-      'authentication level:i:2', 'screen mode id:i:2', 'use multimon:i:0',
-      'desktopwidth:i:1600', 'desktopheight:i:900', 'audiomode:i:0',
-      'redirectclipboard:i:1', 'redirectprinters:i:0', 'redirectsmartcards:i:1',
-      'drivestoredirect:s:*', 'networkautodetect:i:1', 'bandwidthautodetect:i:1'
-    ].join('\r\n')
+    const s = st && st.state
+    if (!s) return
+    const rdp = ['full address:s:' + (s.ip || ''), 'username:s:' + (s.user || 'runneradmin'), 'prompt for credentials:i:1',
+      'authentication level:i:2', 'screen mode id:i:2', 'desktopwidth:i:1600', 'desktopheight:i:900',
+      'redirectclipboard:i:1', 'drivestoredirect:s:*', 'networkautodetect:i:1'].join('\r\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([rdp], { type: 'application/octet-stream' }))
-    a.download = 'Kall.rdp'
-    a.click()
+    a.download = 'Kall.rdp'; a.click()
   }
 
-  const s = st && st.state ? st.state : null
+  const s = st && st.state
   return (
     <div className={'card hero ' + status}>
-      <div className="state-top">
-        <span className="pulse" /><b>{labels[status]}</b><span>{subs[status]}</span>
-      </div>
-
+      <div className="state-top"><span className="pulse" /><b>{labels[status]}</b><span>{subs[status]}</span></div>
       {status === 'setup' && (
-        <>
-          <div className="big grad">Perlu setup</div>
-          <div className="note warn" style={{ marginTop: 10 }}>{(st && (st.info || '')) || 'cek env server panel'}</div>
-        </>
+        <div className="note warn" style={{ marginTop: 8 }}>{(st && st.info) || 'cek env server panel'}</div>
       )}
-
       {status === 'off' && (
         <>
-          <div className="big grad">Desktop belum nyala</div>
-          <div className="sub">Tekan Mulai Desktop untuk menyalakan sesi remote. Proses booting 3-6 menit.</div>
+          <div className="big">DESKTOP MATI</div>
+          <div className="sub">Tekan Mulai untuk menyalakan PC remote. Booting 3-6 menit.</div>
         </>
       )}
-
       {status === 'wait' && (
         <>
-          <div className="big grad">Menghubungi server...</div>
-          <div className="sub">Polling status berjalan otomatis tiap 10 detik.</div>
+          <div className="big">MENGHUBUNGI...</div>
+          <div className="sub">polling status tiap 10 detik.</div>
         </>
       )}
-
       {status === 'on' && s && (
         <>
-          <div className="big grad">{s.machine || 'Kall'}</div>
-          <div className="sub">Sesi aktif. Hubungkan lewat Remote Desktop (mstsc / RD Client) ke alamat di bawah.</div>
-          <KRow label="Alamat" val={s.ip || '-'} copy={s.ip || '-'} />
-          <KRow label="Hostname" val={s.dns || '-'} copy={s.dns || '-'} />
-          <KRow label="Username" val={s.user || 'runneradmin'} copy={s.user || 'runneradmin'} />
-          <KRow label="Password" val={passShown ? (s.pass || '-') : '••••••••••••••••'} copy={s.pass || '-'}
-            extra={<button className="btn ghost" onClick={() => setPassShown(!passShown)}>{passShown ? 'Sembunyi' : 'Lihat'}</button>} />
+          <div className="big">{s.machine || 'KALL'} — HIDUP</div>
+          <div className="sub">Remote Desktop siap. Hubungkan ke alamat di bawah (port 3389).</div>
+          <KRow label="Alamat" v={s.ip || '-'} />
+          <KRow label="Hostname" v={s.dns || '-'} />
+          <KRow label="User" v={s.user || 'runneradmin'} />
+          <KRow label="Password" v={showPass ? (s.pass || '-') : '••••••••••••••••'}
+            extra={<button className="btn ghost mini" onClick={() => setShowPass(!showPass)}>{showPass ? 'Sembunyi' : 'Lihat'}</button>} />
           <div className="rowbtns">
-            <button className="btn primary" onClick={dlRdp}>{I.down} Unduh file .rdp</button>
-            <button className="btn" onClick={copyConn}>Salin info koneksi</button>
-            <button className="btn danger" disabled={busy === 'stop'} onClick={doStop}>
-              {busy === 'stop' && <span className="spin" />} Stop PC
-            </button>
+            <button className="btn primary" onClick={dlRdp}>{I.down} File .rdp</button>
+            <button className="btn" onClick={() => copyText('IP: ' + s.ip + '\nUser: ' + s.user + '\nPass: ' + s.pass).then(() => setErr({ t: 'Info koneksi disalin.', ok: true }))}>Salin info</button>
+            <button className="btn danger" disabled={busy === 'stop'} onClick={stop}>{busy === 'stop' ? <span className="spin" /> : null} Stop PC</button>
           </div>
-          {s.expiresAt && (
-            <div className="hint">Sesi otomatis berakhir sekitar {new Date(s.expiresAt).toLocaleTimeString('id-ID', { hour12: false })} (max 6 jam).</div>
-          )}
+          {s.expiresAt && <div className="hint">sesi berakhir otomatis ±{new Date(s.expiresAt).toLocaleTimeString('id-ID', { hour12: false })}</div>}
         </>
       )}
-
       {(status === 'off' || status === 'wait') && !(st && st.error) && (
         <div className="rowbtns">
-          <button className="btn primary" disabled={busy === 'start'} onClick={doStart}>
-            {busy === 'start' ? <span className="spin" /> : I.power}
-            {busy === 'start' ? ' Menyalakan...' : ' Mulai Desktop'}
+          <button className="btn primary" disabled={busy === 'start'} onClick={() => launch('start')}>
+            {busy === 'start' ? <span className="spin" /> : I.power} {busy === 'start' ? ' Menyalakan...' : ' Mulai Desktop'}
           </button>
         </div>
       )}
-      {err && <div className={'errbox' + (err.ok ? ' okbox' : '')} style={{ display: 'block' }}>{err.t}</div>}
+      {err && <div className={'errbox show' + (err.ok ? ' okbox' : '')}>{err.t}</div>}
     </div>
   )
 }
 
-function KRow({ label, val, copy, extra }) {
+function KRow({ label, v, extra }) {
   return (
-    <div className="krow">
-      <span className="lbl">{label}</span>
-      <code>{val}</code>
-      {extra}
-      <button className="btn ghost" onClick={() => copyText(copy)}>Salin</button>
+    <div className="krow"><span className="lbl">{label}</span><code>{v}</code>{extra}
+      <button className="btn ghost mini" onClick={() => copyText(v)}>salin</button>
     </div>
   )
 }
 
-function LogPanel({ logs, logPaused, setLogPaused, clearAll, copyAll, logBoxRef }) {
-  const cls = { up: 'lup', down: 'ldown', wait: 'lwait', info: 'linfo', ev: 'lev' }
+/* ---------------- Log Sesi ---------------- */
+function SessionLog({ logs, paused, setPaused, clear, copy, logBoxRef }) {
   return (
     <>
       <div className="loghead">
-        <button className="btn ghost mini" onClick={() => setLogPaused(!logPaused)}>{logPaused ? 'Lanjut' : 'Jeda'}</button>
-        <button className="btn ghost mini" onClick={clearAll}>Bersihkan</button>
-        <button className="btn ghost mini" onClick={copyAll}>Salin</button>
-        <span className="cnt">{logs.length} entri</span>
+        <button className="btn mini" onClick={() => setPaused(!paused)}>{paused ? 'Lanjut' : 'Jeda'}</button>
+        <button className="btn mini" onClick={clear}>Hapus</button>
+        <button className="btn mini" onClick={copy}>Salin</button>
+        <span className="cnt">{logs.length} baris</span>
       </div>
       <div className="logbox" ref={logBoxRef}>
-        {logs.length === 0 && <span className="logempty">Menunggu event pertama...</span>}
+        {logs.length === 0 && <span className="logempty">Belum ada event...</span>}
         {logs.map((l, i) => (
           <div className="logline" key={i}>
-            <span className="lt">{l.t}</span>{' '}
-            <span className={'lv ' + (cls[l.k] || 'linfo')}>{l.k.toUpperCase()}</span>{' '}
+            <span className="lt">{l.t}</span>{'  '}
+            <span className={'lv ' + ({ up: 'lup', down: 'ldown', wait: 'lwait', info: 'linfo', ev: 'lev' }[l.k] || 'linfo')}>{l.k.toUpperCase()}</span>{'  '}
             <span>{l.m}</span>
           </div>
         ))}
@@ -409,189 +358,249 @@ function LogPanel({ logs, logPaused, setLogPaused, clearAll, copyAll, logBoxRef 
   )
 }
 
-function ConfigPanel({ cfg, logLine }) {
+/* ---------------- Log Actions ---------------- */
+function ActionsLogCard({ selRun }) {
+  const [act, setAct] = useState(null)
+  const [err, setErr] = useState('')
+  const [tick, setTick] = useState(0)
+  const boxRef = useRef(null)
+
+  useEffect(() => {
+    let dead = false
+    async function load() {
+      try {
+        const q = selRun ? '?run=' + selRun : ''
+        const d = await api('/api/logs' + q)
+        if (dead) return
+        setAct(d); setErr('')
+      } catch (e) { if (!dead) setErr(e.message) }
+    }
+    load()
+    const id = setInterval(load, 12000)
+    return () => { dead = true; clearInterval(id) }
+  }, [selRun, tick])
+
+  useEffect(() => {
+    const box = boxRef.current
+    if (box) box.scrollTop = box.scrollHeight
+  }, [act && act.tail])
+
+  const run = act && act.run
+  const stCls = (s) => {
+    if (s.status === 'in_progress') return 'run'
+    if (s.status === 'completed') return s.conclusion === 'success' ? 'ok' : 'bad'
+    return 'skip'
+  }
+  const stTxt = (s) => {
+    if (s.status === 'completed') return s.conclusion === 'success' ? '✓' : '✗'
+    if (s.status === 'in_progress') return '▶'
+    return '–'
+  }
+
+  return (
+    <Card title="Log Actions" icon={I.clock} subtitle="log mentah runner GitHub Actions - step &amp; output">
+      <div className="loghead">
+        <button className="btn mini" onClick={() => setTick(tick + 1)}>Muat ulang</button>
+        {selRun && <button className="btn mini" onClick={() => window.dispatchEvent(new CustomEvent('kall:log-run', { detail: null }))}>Run terbaru</button>}
+        {run && <span className="cnt mono">run #{run.number} · {run.status}{run.conclusion ? ' · ' + run.conclusion : ''}</span>}
+      </div>
+      {err && <div className="note bad" style={{ marginBottom: 8 }}>Log Actions butuh GITHUB_TOKEN di server panel ({err})</div>}
+      {act && act.steps && act.steps.length > 0 && (
+        <div className="asteps">
+          {act.steps.map((s, i) => (
+            <span key={i} className={'astep ' + stCls(s)} title={s.name}>
+              {stTxt(s)} {s.name.length > 34 ? s.name.slice(0, 34) + '…' : s.name}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="logbox tall" ref={boxRef}>
+        {!act && <span className="logempty">memuat log...</span>}
+        {act && !act.tail && !err && <span className="logempty">(belum ada output)</span>}
+        {act && act.tail && (
+          <div className="logact-tail">{formatTail(act.tail)}</div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+/* warnai marker penting di log actions (grup/error/warning) dengan pendekatan teks */
+function formatTail(tail) {
+  const lines = tail.split('\n')
+  return lines.map((ln, i) => {
+    let cls = ''
+    let txt = ln
+    if (/^##\[group\]/.test(ln)) { cls = 'ghb'; txt = ln.replace(/^##\[group\]/, '') }
+    else if (/^##\[error\]/.test(ln)) { cls = 'gh'; txt = '! ' + ln.replace(/^##\[error\]/, '') }
+    else if (/^##\[warning\]/.test(ln)) { cls = 'gh'; txt = '? ' + ln.replace(/^##\[warning\]/, '') }
+    else if (/^##\[endgroup\]/.test(ln)) { cls = 'gh'; txt = '— end —' }
+    return <div key={i} className={cls}>{txt || '\u00A0'}</div>
+  })
+}
+
+/* ---------------- Riwayat Run ---------------- */
+function RunsList({ runs, runsErr, onLog }) {
+  return (
+    <ul className="ulist" id="logActionsCard">
+      {runsErr && <li className="dim">butuh GITHUB_TOKEN di server panel untuk riwayat</li>}
+      {!runsErr && runs.length === 0 && <li className="dim">Belum ada run.</li>}
+      {!runsErr && runs.slice(0, 7).map((r) => (
+        <li key={r.id}>
+          <span className={pillCls(r)}>{pillTxt(r)}</span>
+          <span className="t mono">#{r.run_number} · {shortWhen(r.created_at)}</span>
+          <button className="act" onClick={() => { onLog(r.run_number); const el = document.getElementById('logActionsCard'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }) }}>log</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function pillCls(r) {
+  const m = { completed: 'pill ok', cancelled: 'pill bad', in_progress: 'pill run', queued: 'pill run', waiting: 'pill run' }
+  return m[r.status] || 'pill gray'
+}
+function pillTxt(r) {
+  if (r.status === 'completed') return r.conclusion === 'success' ? 'ok' : r.conclusion || 'selesai'
+  if (r.status === 'in_progress' || r.status === 'queued' || r.status === 'waiting') return 'jalan'
+  if (r.status === 'cancelled') return 'stop'
+  return r.status
+}
+
+/* ---------------- Konfigurasi ---------------- */
+function Config({ cfg, logLine }) {
   const [busy, setBusy] = useState(null)
   const [msg, setMsg] = useState(null)
-  const pinNeeded = !!(cfg && cfg.config && cfg.config.hasAdminPin)
   const [pin, setPin] = useState(PIN)
+  const pinNeeded = !!(cfg && cfg.config && cfg.config.hasAdminPin)
 
   const askPin = () => {
     if (!pinNeeded) return true
-    if (!pin) { setMsg({ t: 'Masukkan PIN admin dulu.', ok: false }); return false }
-    PIN = pin
-    sessionStorage.setItem('kall_pin', pin)
-    return true
+    if (!pin) { setMsg({ t: 'Masukkan PIN admin.', ok: false }); return false }
+    PIN = pin; sessionStorage.setItem('kall_pin', pin); return true
   }
-
-  const doStart = async () => {
+  const start = async () => {
     if (!askPin()) return
-    setBusy('start'); setMsg(null)
+    setBusy('s'); setMsg(null)
     try {
-      const launch = getLaunchConfig()
-      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) launch.wallpaperUrl = w.url } catch { /* noop */ }
-      await api('/api/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(launch)
-      })
-      logLine('info', 'perintah MULAI dikirim lewat kartu konfigurasi')
-      logLine('wait', 'menunggu runner booting (3-6 menit) ...')
-      setMsg({ t: 'Workflow dijalankan. VM siap sekitar 3-6 menit.', ok: true })
+      const body = {
+        pcName: (document.getElementById('pcName') || {}).value || 'Kall',
+        exitNode: (document.getElementById('exitNode') || {}).value || '',
+        os: (document.getElementById('osSel') || {}).value || 'Windows',
+        provision: (document.getElementById('modeSel') || {}).value || 'Cepat',
+        wallpaperUrl: ''
+      }
+      try { const w = await api('/api/wallpaper'); if (w.ok && w.url) body.wallpaperUrl = w.url } catch { /* noop */ }
+      await api('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      logLine('info', 'MULAI (' + body.os + ' / ' + body.provision + ')')
+      logLine('wait', 'menunggu runner booting')
+      setMsg({ t: 'Dijalankan. PC siap ~4-5 menit.', ok: true })
     } catch (e) {
       logLine('down', 'MULAI gagal: ' + e.message)
       setMsg({ t: e.message, ok: false })
     } finally { setBusy(null) }
   }
-
-  const doStop = async () => {
+  const stop = async () => {
+    if (!confirm('Stop PC?')) return
     if (!askPin()) return
-    if (!confirm('Yakin mau stop PC sekarang?')) return
-    setBusy('stop'); setMsg(null)
+    setBusy('t'); setMsg(null)
     try {
       const d = await api('/api/cancel', { method: 'POST' })
-      logLine('down', 'perintah STOP dikirim (' + ((d && d.message) || 'ok') + ')')
+      logLine('down', 'STOP (' + ((d && d.message) || 'ok') + ')')
       setMsg({ t: (d && d.message) || 'Dimatikan.', ok: true })
-    } catch (e) {
-      logLine('down', 'STOP gagal: ' + e.message)
-      setMsg({ t: e.message, ok: false })
-    } finally { setBusy(null) }
+    } catch (e) { setMsg({ t: e.message, ok: false }) } finally { setBusy(null) }
   }
-
   return (
     <>
-      {pinNeeded && <label className="lab">PIN ADMIN PANEL</label>}
-      {pinNeeded && (
-        <input type="password" placeholder="Masukkan PIN admin" autoComplete="off" value={pin}
-          onChange={(e) => setPin(e.target.value)} />
-      )}
-      <label className="lab">NAMA PC (WINDOWS + TAILSCALE)</label>
-      <input type="text" id="pcName" defaultValue="Kall" placeholder="Kall" />
-      <details>
-        <summary>Opsi lanjutan</summary>
-        <label className="lab">EXIT NODE TAILSCALE (OPSIONAL)</label>
-        <input type="text" id="exitNode" placeholder="contoh: 100.99.1.2 atau nama device" />
-        <div className="hint">
-          Isi IP perangkat Tailscale kamu (HP/PC rumah yang aktif exit node). Efeknya: IP yang dilihat website = IP rumah
-          kamu, bukan IP datacenter. Krusial biar <b>login Google tidak kena verifikasi berulang</b>.
-        </div>
-      </details>
+      {pinNeeded && <label className="lab">PIN ADMIN</label>}
+      {pinNeeded && <input type="password" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="PIN admin" />}
+      <label className="lab">Nama PC</label>
+      <input type="text" id="pcName" defaultValue="Kall" />
       <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
         <div style={{ flex: 1 }}>
-          <label className="lab">SISTEM OPERASI VM</label>
-          <select id="osSelect" className="sel" defaultValue="Windows">
-            <option value="Windows">Windows (Server 2022)</option>
-            <option value="Linux (Ubuntu)">Linux Ubuntu (XFCE)</option>
+          <label className="lab">Sistem Operasi</label>
+          <select id="osSel" className="sel" defaultValue="Windows">
+            <option value="Windows">Windows Server</option>
+            <option value="Linux (Ubuntu)">Linux Ubuntu</option>
           </select>
         </div>
         <div style={{ flex: 1 }}>
-          <label className="lab">PROVISIONING</label>
-          <select id="modeSelect" className="sel" defaultValue="Cepat">
-            <option value="Cepat">Cepat (tanpa aplikasi)</option>
-            <option value="Full">Full (browser &amp; tools)</option>
+          <label className="lab">Mode</label>
+          <select id="modeSel" className="sel" defaultValue="Cepat">
+            <option value="Cepat">Cepat</option>
+            <option value="Full">Full</option>
           </select>
         </div>
       </div>
+      <details>
+        <summary>Opsi lanjutan</summary>
+        <label className="lab">Exit Node Tailscale</label>
+        <input type="text" id="exitNode" placeholder="100.x.x.x / nama device" />
+        <div className="hint">Isi IP perangkat Tailscale kamu supaya IP internet = IP rumah (bantu login Google).</div>
+      </details>
       <div className="rowbtns">
-        <button className="btn primary" disabled={busy !== null} onClick={doStart}>
-          {busy === 'start' ? <span className="spin" /> : I.power}
-          {busy === 'start' ? ' Menyalakan...' : ' Mulai'}
-        </button>
-        <button className="btn danger" disabled={busy !== null} onClick={doStop}>Stop</button>
+        <button className="btn primary" disabled={busy} onClick={start}>{busy === 's' ? <span className="spin" /> : I.power} Mulai</button>
+        <button className="btn danger" disabled={busy} onClick={stop}>Stop</button>
       </div>
-      {msg && <div className={'errbox' + (msg.ok ? ' okbox' : '')} style={{ display: 'block' }}>{msg.t}</div>}
-      <div className="note" style={{ marginTop: 13 }}>
-        <b>Password desktop: TETAP</b> - tidak ganti-ganti tiap sesi (dikunci lewat secret <span className="mono">RDP_PASSWORD</span>).
-      </div>
+      {msg && <div className={'errbox show' + (msg.ok ? ' okbox' : '')}>{msg.t}</div>}
+      <div className="note" style={{ marginTop: 12 }}>Password desktop <b>tetap</b> (secret RDP_PASSWORD).</div>
     </>
   )
 }
 
-function WallpaperPanel({ wall, setWall, logLine }) {
+/* ---------------- Wallpaper ---------------- */
+function Wallpaper({ wall, setWall, logLine }) {
   const [msg, setMsg] = useState(null)
   const [busy, setBusy] = useState(false)
   const [drag, setDrag] = useState(false)
-  const fileRef = useRef(null)
-
-  const upload = async (file) => {
+  const ref = useRef(null)
+  const up = async (file) => {
     if (!file) return
-    if (file.size > 4 * 1024 * 1024) { setMsg({ t: 'Ukuran maks 4 MB (batas serverless Vercel).', ok: false }); return }
+    if (file.size > 4 * 1024 * 1024) { setMsg({ t: 'Maks 4 MB.', ok: false }); return }
     setBusy(true); setMsg(null)
     try {
-      const d = await api('/api/wallpaper', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: file
-      })
-      setWall(d.url + '?t=' + Date.now())
-      logLine('info', 'wallpaper baru diupload ke repo')
-      setMsg({ t: 'Berhasil. Wallpaper ini dipakai otomatis di sesi berikutnya.', ok: true })
-    } catch (e) {
-      logLine('down', 'upload wallpaper gagal: ' + e.message)
-      setMsg({ t: 'Gagal: ' + e.message, ok: false })
-    } finally { setBusy(false) }
+      const d = await api('/api/wallpaper', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })
+      setWall(d.url + '?t=' + Date.now()); logLine('info', 'wallpaper baru diupload'); setMsg({ t: 'Berhasil - dipakai sesi berikutnya.', ok: true })
+    } catch (e) { setMsg({ t: 'Gagal: ' + e.message, ok: false }) } finally { setBusy(false) }
   }
-
   return (
     <>
-      <div className="hint">Upload gambar kamu - otomatis dipakai sebagai wallpaper sesi berikutnya. Maks 4 MB (JPG/PNG/WebP).</div>
-      <div className={'drop' + (drag ? ' over' : '')}
-        onClick={() => fileRef.current && fileRef.current.click()}
-        onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
-        onDragLeave={() => setDrag(false)}
-        onDrop={(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files && e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]) }}>
-        <b>Pilih / tarik gambar</b> ke sini
+      <div className="hint">JPG/PNG/WebP max 4 MB. Efek sesi berikutnya.</div>
+      <div className={'drop' + (drag ? ' over' : '')} onClick={() => ref.current && ref.current.click()}
+        onDragOver={(e) => { e.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)}
+        onDrop={(e) => { e.preventDefault(); setDrag(false); up(e.dataTransfer.files && e.dataTransfer.files[0]) }}>
+        <b>Upload / tarik gambar</b>
       </div>
-      <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }}
-        onChange={(e) => { if (e.target.files && e.target.files[0]) upload(e.target.files[0]) }} />
-      {wall && <div className="thumb"><img src={wall} alt="wallpaper aktif" /></div>}
-      {busy && <div className="hint">Mengupload ke repo...</div>}
-      {msg && <div className={'errbox' + (msg.ok ? ' okbox' : '')} style={{ display: 'block' }}>{msg.t}</div>}
+      <input ref={ref} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }}
+        onChange={(e) => up(e.target.files && e.target.files[0])} />
+      {wall && <div className="thumb"><img src={wall} alt="wallpaper" /></div>}
+      {busy && <div className="hint">mengupload...</div>}
+      {msg && <div className={'errbox show' + (msg.ok ? ' okbox' : '')}>{msg.t}</div>}
     </>
   )
 }
 
-function InfoPanel({ cfg, st }) {
+/* ---------------- Info panel ---------------- */
+function Info({ cfg, st }) {
   const c = cfg && cfg.config
-  const row = (label, val, ok) => (
-    <div className="cfgrow">{label}<b className={ok ? 'yes' : 'no'}>{val}</b></div>
-  )
+  const row = (l, v, ok) => <div className="cfgrow">{l}<b className={ok ? 'yes' : 'no'}>{v}</b></div>
   return (
     <>
-      {row('Repo GitHub', (c && c.repo) || 'belum diset', !!(c && c.repo))}
-      {row('Token kontrol', c && c.hasToken ? 'terpasang' : 'tidak', !!(c && c.hasToken))}
-      {row('Kunci panel', c && c.hasPanelKey ? 'terpasang' : 'tidak', !!(c && c.hasPanelKey))}
-      {row('Login Tailscale', c && c.hasTsAuth ? 'otomatis' : 'klik link di log', !!(c && c.hasTsAuth))}
-      <div className="note" style={{ marginTop: 13 }}>
-        Panel berjalan di <b>hosting gratis (Vercel)</b> dan bisa diakses lewat <b>domain sendiri</b> - bukan IP.
-        Koneksi RDP tetap lewat jaringan Tailscale (<span className="mono">IP:3389</span> atau hostname
-        <span className="mono"> kall.&lt;tailnet&gt;.ts.net</span>).
-      </div>
-      {st && st.state && (
-        <div className="note ok" style={{ marginTop: 10 }}>
-          Sesi dilaporkan {new Date(st.state.provisionedAt).toLocaleString('id-ID')}
-        </div>
-      )}
+      {row('REPO', (c && c.repo) || '—', !!(c && c.repo))}
+      {row('TOKEN', c && c.hasToken ? 'OK' : '—', !!(c && c.hasToken))}
+      {row('PANEL KEY', c && c.hasPanelKey ? 'OK' : '—', !!(c && c.hasPanelKey))}
+      {row('LOG ACTIONS', c && c.hasToken ? 'aktif' : 'mati (butuh token)', !!(c && c.hasToken))}
+      {st && st.state && <div className="hint">session dilaporkan {new Date(st.state.provisionedAt).toLocaleString('id-ID')}</div>}
     </>
   )
 }
 
-/* ================= helper ================= */
+/* ============================================================ helpers */
 function loadLogs() {
   try {
     const raw = localStorage.getItem('kall_logs')
     if (!raw) return []
     const arr = JSON.parse(raw)
-    return Array.isArray(arr) ? arr.slice(-250) : []
+    return Array.isArray(arr) ? arr.slice(-MAXLOG) : []
   } catch { return [] }
-}
-
-function pillCls(r) {
-  const map = { completed: 'pill ok', cancelled: 'pill bad', in_progress: 'pill run', queued: 'pill run', waiting: 'pill run' }
-  return map[r.status] || 'pill gray'
-}
-function pillTxt(r) {
-  if (r.status === 'completed') return 'selesai' + (r.conclusion && r.conclusion !== 'success' ? ' (' + r.conclusion + ')' : '')
-  if (r.status === 'in_progress' || r.status === 'queued' || r.status === 'waiting') return 'berjalan'
-  if (r.status === 'cancelled') return 'dibatalkan'
-  return r.status
 }

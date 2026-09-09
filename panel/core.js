@@ -220,6 +220,58 @@ async function handleWallpaperCurrent(req, res) {
   return json(res, 200, { ok: true, url: txt ? txt.trim() : null });
 }
 
+// ---------------------------------------------------------------------------
+// Log Actions: ambil step + log mentah dari GitHub Actions (run terbaru)
+// ?run=<nomor|id> untuk run tertentu
+// ---------------------------------------------------------------------------
+async function handleLogs(req, res) {
+  try {
+    const u = new URL(req.url, 'http://x');
+    const want = (u.searchParams.get('run') || '').trim();
+    if (!REPO) return json(res, 200, { ok: false, error: 'GITHUB_REPO belum diset.', run: null, steps: [], tail: '' });
+
+    const rr = await gh(`${GH_API}/repos/${REPO}/actions/runs?per_page=6`);
+    const runs = rr.workflow_runs || [];
+    let target = null;
+    if (want) target = runs.find((x) => String(x.run_number) === want || String(x.id) === want);
+    if (!target) target = runs[0];
+    if (!target) return json(res, 200, { ok: true, run: null, steps: [], tail: 'Belum ada run.' });
+
+    const jr = await gh(`${GH_API}/repos/${REPO}/actions/runs/${target.id}/jobs`);
+    const job = (jr.jobs || [])[0];
+    let steps = [];
+    let tail = '';
+    if (job) {
+      steps = (job.steps || []).map((s) => ({
+        name: s.name || 'step', status: s.status || 'unknown', conclusion: s.conclusion || null,
+      }));
+      try {
+        const r = await fetch(`${GH_API}/repos/${REPO}/actions/jobs/${job.id}/logs`, {
+          headers: { ...H, Accept: 'application/vnd.github+json' },
+        });
+        if (r.ok) {
+          const txt = await r.text();
+          const lines = txt.split(/\r?\n/).filter(Boolean);
+          const last = lines.slice(-400).map((l) =>
+            l.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\s*/, ''));
+          tail = last.join('\n');
+        } else {
+          tail = '(log belum dirilis GitHub untuk run yang masih jalan - beberapa step harus selesai dulu)';
+        }
+      } catch (e) {
+        tail = '(gagal membaca log: ' + e.message + ')';
+      }
+    }
+    return json(res, 200, {
+      ok: true,
+      run: { id: target.id, number: target.run_number, status: target.status, conclusion: target.conclusion || null },
+      steps, tail,
+    });
+  } catch (e) {
+    return json(res, 200, { ok: false, error: e.message, run: null, steps: [], tail: '' });
+  }
+}
+
 async function handleInfo(req, res) {
   return json(res, 200, {
     ok: true,
@@ -267,6 +319,7 @@ async function handler(req, res) {
     if (req.method === 'GET' && p === '/api/runs') return handleRuns(req, res);
     if (req.method === 'GET' && p === '/api/info') return handleInfo(req, res);
     if (req.method === 'GET' && p === '/api/wallpaper') return handleWallpaperCurrent(req, res);
+    if (req.method === 'GET' && p === '/api/logs') return handleLogs(req, res);
     if (req.method === 'POST' && p === '/api/start') return handleStart(req, res);
     if (req.method === 'POST' && p === '/api/cancel') return handleCancel(req, res);
     if (req.method === 'POST' && p === '/api/wallpaper') return handleWallpaperUpload(req, res);
