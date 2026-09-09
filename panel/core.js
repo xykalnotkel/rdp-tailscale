@@ -212,15 +212,33 @@ async function handleCancel(req, res) {
     return json(res, 401, { ok: false, error: 'PIN admin salah.' });
   }
   try {
-    const r = await gh(`${GH_API}/repos/${REPO}/actions/runs?per_page=5&status=in_progress`);
+    const r = await gh(`${GH_API}/repos/${REPO}/actions/runs?per_page=10&status=in_progress`);
     const runs = r.workflow_runs || [];
-    if (!runs.length) return json(res, 200, { ok: true, message: 'Tidak ada run berjalan.' });
+    if (!runs.length) {
+      try { await clearState({ starting: false }) } catch { /* non-fatal */ }
+      return json(res, 200, { ok: true, message: 'Tidak ada run berjalan.' });
+    }
+    const failed = [];
     for (const run of runs) {
-      try { await gh(`${GH_API}/repos/${REPO}/actions/runs/${run.id}/cancel`, { method: 'POST' }); } catch {}
+      let doneRun = false;
+      for (let attempt = 1; attempt <= 3 && !doneRun; attempt++) {
+        try {
+          await gh(`${GH_API}/repos/${REPO}/actions/runs/${run.id}/cancel`, { method: 'POST' });
+          doneRun = true;
+        } catch (e) {
+          if (attempt === 3) failed.push('#' + run.run_number + ': ' + (e.message || 'gagal'));
+          else await new Promise((rr) => setTimeout(rr, 4000 * attempt));
+        }
+      }
+    }
+    if (failed.length === runs.length) {
+      return json(res, 200, { ok: false, error: 'Stop GAGAL: ' + failed.join('; ') });
     }
     // bersihkan state biar panel tidak nampilkan sesi basi
     try { await clearState({ starting: false }) } catch (e) { /* non-fatal */ }
-    return json(res, 200, { ok: true, message: `Run ${runs.map((x) => '#' + x.run_number).join(', ')} di-stop.` });
+    const stopped = runs.filter((x) => !failed.some((fn) => fn.startsWith('#' + x.run_number + ':'))).map((x) => '#' + x.run_number);
+    const msg = 'Stop dikirim untuk run ' + stopped.join(', ') + ' - VM mati total dalam 1-2 menit.' + (failed.length ? ' | GAGAL: ' + failed.join('; ') : '');
+    return json(res, 200, { ok: true, message: msg });
   } catch (e) {
     return json(res, 200, { ok: false, error: `Gagal stop: ${e.message}` });
   }
