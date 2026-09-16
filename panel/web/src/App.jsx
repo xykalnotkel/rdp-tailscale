@@ -326,7 +326,7 @@ function Hero({ status, st, logLine, cfg }) {
     // di-close, tanpa notifikasi "Remote Desktop".
     const rdp = [
       'full address:s:' + (s.ip || ''),
-      'username:s:' + (s.user || 'runneradmin'),
+      'username:s:' + (s.user || 'kall'),
       'prompt for credentials:i:1',
       'authentication level:i:1',
       'screen mode id:i:2',
@@ -390,7 +390,7 @@ function Hero({ status, st, logLine, cfg }) {
           <div className="sub">Remote Desktop siap. Hubungkan ke alamat di bawah (port 3389).</div>
           <KRow label="Alamat" v={s.ip || '-'} />
           <KRow label="Hostname" v={s.dns || '-'} />
-          <KRow label="User" v={s.user || 'runneradmin'} />
+          <KRow label="User" v={s.user || 'kall'} />
           <KRow label="Password" v={showPass ? (s.pass || '-') : '••••••••••••••••'}
             extra={<button className="btn ghost mini" onClick={() => setShowPass(!showPass)}>{showPass ? 'Sembunyi' : 'Lihat'}</button>} />
           <div className="rowbtns">

@@ -145,7 +145,7 @@ async function handleState(req, res) {
     return json(res, 200, {
       ok: true, running: active,
       state: {
-        ip: st.ip || '', dns: st.dns || '', user: st.user || 'runneradmin',
+        ip: st.ip || '', dns: st.dns || '', user: st.user || 'kall',
         pass: st.pass || '', machine: st.machine || '',
         starting: !!st.starting,
         provisionedAt: st.provisionedAt || null, expiresAt: st.expiresAt || null,
@@ -395,7 +395,7 @@ async function handleEvents(req, res) {
           const exp = new Date(st.expiresAt).getTime();
           out.running = Date.now() < exp;
           out.state = {
-            ip: st.ip || '', dns: st.dns || '', user: st.user || 'runneradmin',
+            ip: st.ip || '', dns: st.dns || '', user: st.user || 'kall',
             pass: st.pass || '', machine: st.machine || '', starting: !!st.starting,
             provisionedAt: st.provisionedAt || null, expiresAt: st.expiresAt || null,
             remainingSeconds: Math.max(0, Math.floor((exp - Date.now()) / 1000)),

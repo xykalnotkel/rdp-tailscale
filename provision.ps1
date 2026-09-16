@@ -9,6 +9,15 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference     = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Variabel bisa datang langsung dari env (jalankan manual) atau dari
+# kall-vars.ps1 (saat dipanggil via scheduled task SEBAGAI user RDP).
+# PENTING: script ini dijalankan sebagai user RDP (default: kall) supaya
+# semua setting per-user (tema, wallpaper, Run key, no-lock, TTB) masuk
+# ke profil user RDP yang dilihat pelanggan.
+$varsFile = Join-Path $PSScriptRoot 'kall-vars.ps1'
+if (Test-Path $varsFile) { . $varsFile }
+$script:RdpUser = if ($env:RDP_USER) { $env:RDP_USER } else { 'runneradmin' }
+
 $script:Mode    = if ($env:PROVISION_MODE -eq 'Full') { 'Full' } else { 'Cepat' }
 $script:Failures = 0
 
@@ -130,12 +139,12 @@ try {
 try {
   $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
   Set-ItemProperty -Path $wl -Name 'AutoAdminLogon' -Value '1'
-  Set-ItemProperty -Path $wl -Name 'DefaultUserName' -Value 'runneradmin'
+  Set-ItemProperty -Path $wl -Name 'DefaultUserName' -Value $script:RdpUser
   Set-ItemProperty -Path $wl -Name 'DefaultPassword' -Value $env:RDP_PASS
-  Done $true 'auto-login aktif'
+  Done $true "auto-login aktif (user: $script:RdpUser)"
 } catch { Warn 'auto-login gagal' }
-try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue } catch {}
-Done $true 'runneradmin admin + RDP'
+try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $script:RdpUser -ErrorAction SilentlyContinue } catch {}
+Done $true "$script:RdpUser admin + RDP"
 
 # ============================================================================
 # 4b. RASAIL PC ASLI - biar terasa kayak Windows biasa, bukan "sesi RDP"
@@ -272,7 +281,7 @@ try {
       Unregister-ScheduledTask -TaskName 'KallTranslucentTB' -Confirm:$false -ErrorAction SilentlyContinue
       $ttbAction = New-ScheduledTaskAction -Execute $ttbExe
       $ttbTrig   = New-ScheduledTaskTrigger -AtLogOn
-      $ttbPrin   = New-ScheduledTaskPrincipal -UserId 'runneradmin' -LogonType Interactive -RunLevel Limited
+      $ttbPrin   = New-ScheduledTaskPrincipal -UserId $script:RdpUser -LogonType Interactive -RunLevel Limited
       $ttbSet    = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
       Register-ScheduledTask -TaskName 'KallTranslucentTB' -Action $ttbAction -Trigger $ttbTrig -Principal $ttbPrin -Settings $ttbSet -Force | Out-Null
     } catch { Warn 'scheduled task TTB gagal: ' + $_.Exception.Message }

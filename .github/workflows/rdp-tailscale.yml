@@ -34,6 +34,10 @@ on:
         description: 'Nama PC (Windows + Tailscale)'
         required: false
         default: 'Kall'
+      RDP_USER:
+        description: 'Nama user RDP (admin penuh)'
+        required: false
+        default: 'kall'
       EXIT_NODE:
         description: 'Exit node Tailscale (khusus Windows; IP 100.x / nama device). Biar IP keluar = IP rumah kamu.'
         required: false
@@ -77,6 +81,7 @@ jobs:
         shell: powershell
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          RDP_USER: ${{ github.event.inputs.RDP_USER }}
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
@@ -84,11 +89,24 @@ jobs:
             $chars = (48..57) + (65..90) + (97..122)
             $pass = -join ($chars | Get-Random -Count 16 | ForEach-Object { [char]$_ })
           }
+          # Nama user RDP (default: kall) - dibuat sebagai admin penuh
+          $rdpUser = ($env:RDP_USER -replace '[^A-Za-z0-9\-_]', '').Trim()
+          if (-not $rdpUser) { $rdpUser = 'kall' }
           "RDP_PASS=$pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
-          Set-LocalUser -Name 'runneradmin' -Password (ConvertTo-SecureString -AsPlainText $pass -Force)
+          "RDP_USER=$rdpUser" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          $secPass = ConvertTo-SecureString -AsPlainText $pass -Force
+          Set-LocalUser -Name 'runneradmin' -Password $secPass
           if (-not (Get-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue)) {
             Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
           }
+          # Buat user RDP (jika belum ada) + admin tertinggi + boleh login RDP
+          if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
+            Set-LocalUser -Name $rdpUser -Password $secPass
+          } else {
+            New-LocalUser -Name $rdpUser -FullName $rdpUser -Password $secPass -NeverExpires
+          }
+          Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $rdpUser -ErrorAction SilentlyContinue
           # Longgarkan batas sesi biar tidak kena error "another connection" 0x5:
           # 1) satu user boleh punya >1 sesi sekaligus (console + RDP)
           # 2) limit koneksi dibuat longgar, NLA dimatikan (biar klien HP lancar)
@@ -103,8 +121,8 @@ jobs:
           try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue } catch {}
           Restart-Service TermService -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
-          Write-Host 'Batas sesi dilonggarkan (multi-session per user, NLA off, RDP Users + runneradmin)'
-          Write-Host 'RDP Windows siap - user: runneradmin'
+          Write-Host "Batas sesi dilonggarkan (multi-session per user, NLA off, RDP Users + $rdpUser)"
+          Write-Host "RDP Windows siap - user: $rdpUser (Administrator)"
 
       - name: Siapkan akses remote (Linux Ubuntu - xrdp)
         if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
@@ -281,7 +299,7 @@ jobs:
         if: ${{ github.event.inputs.OS == 'Windows' }}
         shell: powershell
         continue-on-error: true
-        timeout-minutes: 25
+        timeout-minutes: 30
         env:
           PC_NAME: ${{ github.event.inputs.PC_NAME }}
           PROVISION_MODE: ${{ github.event.inputs.PROVISION_MODE }}
@@ -289,7 +307,42 @@ jobs:
           WALLPAPER_DEFAULT: 'https://api-asset.haekal.web.id/a/xyspace-assets%2Fapproved%2FXyCloudStore_rental_pc_morphing_16x9'
         run: |
           $ErrorActionPreference = 'Continue'
-          & "$env:GITHUB_WORKSPACE\provision.ps1"
+          $user = if ($env:RDP_USER) { $env:RDP_USER } else { 'kall' }
+          # Scheduled task tidak mewarisi $env job -> tulis variabel ke file
+          # (file ini efimer, tidak pernah di-commit)
+          $vars = Join-Path $env:GITHUB_WORKSPACE 'kall-vars.ps1'
+          Set-Content -Path $vars -Encoding ascii -Value @(
+            "`$env:PC_NAME           = '$env:PC_NAME'",
+            "`$env:PROVISION_MODE    = '$env:PROVISION_MODE'",
+            "`$env:WALLPAPER_URL     = '$env:WALLPAPER_URL'",
+            "`$env:WALLPAPER_DEFAULT = '$env:WALLPAPER_DEFAULT'",
+            "`$env:RDP_PASS          = '$env:RDP_PASS'",
+            "`$env:RDP_USER          = '$user'"
+          )
+          # Jalankan provision.ps1 SEBAGAI user RDP (elevated) supaya setting
+          # per-user (tema, wallpaper, Run key, no-lock, TTB) masuk profil
+          # user RDP - bukan profil runneradmin.
+          $taskName = 'KallProvision'
+          Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$env:GITHUB_WORKSPACE\provision.ps1`""
+          $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date)
+          $principal = New-ScheduledTaskPrincipal -UserId $user -Password $env:RDP_PASS -RunLevel Highest
+          $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromMinutes(28))
+          Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+          Start-ScheduledTask -TaskName $taskName
+          # tunggu selesai (maks 28 menit, sama dengan watchdog installer)
+          $deadline = (Get-Date).AddMinutes(28)
+          $info = $null
+          while ((Get-Date) -lt $deadline) {
+            $info = Get-ScheduledTaskInfo -TaskName $taskName
+            if ($info.State -ne 'Running') { break }
+            Start-Sleep -Seconds 15
+          }
+          $info = Get-ScheduledTaskInfo -TaskName $taskName
+          Write-Host "Provision selesai (sebagai $user): State=$($info.State) LastTaskResult=$($info.LastTaskResult)"
+          if ($info.LastTaskResult -eq 0) { Write-Host '[OK] Provision sukses sebagai user RDP' }
+          else { Write-Host "::warning::Provision LastTaskResult=$($info.LastTaskResult) (0 = berhasil) - cek output di atas" }
+          Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
       - name: Provisioning (Linux Ubuntu)
         if: ${{ github.event.inputs.OS == 'Linux (Ubuntu)' }}
@@ -327,8 +380,9 @@ jobs:
           try { $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch {}
           # Kadaluarsa PERSIS 6 jam dari mulai run (sesuai timeout-minutes: 360)
           try { $expiry = (Get-Date $env:RUN_STARTED).ToUniversalTime().AddMinutes(360) } catch { $expiry = (Get-Date).ToUniversalTime().AddMinutes(360) }
+          $rdpUser = if ($env:RDP_USER) { $env:RDP_USER } else { 'kall' }
           $payload = [ordered]@{
-            v = 1; os = 'Windows'; ip = $ip; dns = $dns; user = 'runneradmin'
+            v = 1; os = 'Windows'; ip = $ip; dns = $dns; user = $rdpUser
             pass = $env:RDP_PASS; machine = '${{ github.event.inputs.PC_NAME }}'
             provisionedAt = (Get-Date).ToUniversalTime().ToString('o')
             expiresAt = $expiry.ToString('o')
