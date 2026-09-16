@@ -143,26 +143,41 @@ jobs:
           net accounts /MINPWLEN:1 | Out-Null
           net accounts /MINPWAGE:0 | Out-Null
           Write-Host "=== DIAG pass: len=$($pass.Length) b64=$([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($pass)))"
+          # --- PROBE: apakah policy complexity aktif di VM ini? (akun uji,
+          #     langsung dihapus; stderrnya normal di log, tidak fatal) ---
+          net user _diagx 'Ab1!' /ADD
+          Write-Host "=== DIAG probe 4-kelas(len 4): exit=$LASTEXITCODE"
+          net user _diagx /delete | Out-Null
+          net user _diagy 'ab12' /ADD
+          Write-Host "=== DIAG probe 2-kelas(len 4): exit=$LASTEXITCODE"
+          net user _diagy /delete | Out-Null
           if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
             Set-LocalUser -Name $rdpUser -Password $secPass
-            Write-Host "User $rdpUser sudah ada - password di-set via Set-LocalUser"
+            Write-Host "User $rdpUser sudah ada - password via Set-LocalUser"
           } else {
-            # Akun BARU: buat + set password pertama via WinNT provider (COM).
-            # SetPassword di WinNT menangani 'password pertama' akun baru
-            # dengan benar (New-LocalUser -NoPassword tidak bisa).
-            $comp = [adsi]"WinNT://./,computer"
-            $newU = $comp.Create('user', $rdpUser)
-            $newU.SetPassword($pass)
-            $newU.FullName = $rdpUser
-            $newU.Save()
+            # Akun BARU: buat LANGSUNG dengan password (net user /ADD) —
+            # TIDAK lewat akun 'NoPassword': akun yang belum pernah punya
+            # password menolak password pertama via net user / Set-LocalUser
+            # dengan error 'policy' generik (terbukti run #36-#38, padahal
+            # length/age/history sudah dilonggarkan semua).
+            $addOut = net user $rdpUser $pass /ADD
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "net user /ADD OK"
+            } else {
+              Write-Host "net user /ADD gagal (exit $LASTEXITCODE): $addOut"
+              Write-Host 'Fallback: New-LocalUser -NoPassword + WinNT SetPassword'
+              New-LocalUser -Name $rdpUser -FullName $rdpUser -NoPassword
+              $ads = [adsi]"WinNT://./$rdpUser,user"
+              $ads.SetPassword($pass)
+              Write-Host 'WinNT SetPassword OK (fallback)'
+            }
             Set-LocalUser -Name $rdpUser -PasswordNeverExpires $true
-            Write-Host "User $rdpUser dibuat via WinNT (password + NeverExpires OK)"
           }
           # VERIFIKASI END-TO-END: kredensial $rdpUser benar-benar bisa
-          # authenticate (jangan andalkan 'tidak ada error' saja).
+          # authenticate. Kalau gagal = RDP pasti gagal login -> fail fast.
           net use '\\localhost\ipc$' "/user:$rdpUser" $pass
-          if ($LASTEXITCODE -eq 0) { Write-Host '=== VERIFIKASI KREDENSIAL: OK (login $rdpUser berhasil) ===' }
-          else { Write-Host "::warning::VERIFIKASI KREDENSIAL GAGAL (exit $LASTEXITCODE) - password $rdpUser belum tentu benar!" }
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::VERIFIKASI KREDENSIAL GAGAL (exit $LASTEXITCODE) - $rdpUser tidak bisa authenticate. Cek log di atas."; exit 1 }
+          Write-Host '=== VERIFIKASI KREDENSIAL: OK (login $rdpUser berhasil) ==='
           net use '\\localhost\ipc$' /delete
           Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $rdpUser -ErrorAction SilentlyContinue
