@@ -85,42 +85,74 @@ jobs:
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
-          # Password dari secret TETAP dipakai ASALKAN kuat + karakternya aman.
-          # Policy VM menolak password lemah (complexity), dan karakter khusus
-          # tertentu merusak pemanggilan 'net user' / file .rdp. Kalau lemah
-          # atau karakternya berantakan -> acak kuat (tetap tampil di panel
-          # dan di file .rdp, jadi user tetap bisa login).
-          function Test-PwStrong([string]$p) {
-            if ($p.Length -lt 10) { return $false }
+          # Longgarkan batasan password (length + age).
+          net accounts /MINPWLEN:1 | Out-Null
+          net accounts /MINPWAGE:0 | Out-Null
+          # Nama user RDP (default: kall) - dibuat sebagai admin penuh
+          $rdpUser = ($env:RDP_USER -replace '[^A-Za-z0-9\-_]', '').Trim()
+          if (-not $rdpUser) { $rdpUser = 'kall' }
+          # --- PROBE: batas panjang password utk AKUN BARU (password uji
+          #     4-kelas). Bukti run #40: secret 16 char ditolak utk akun
+          #     baru, tapi 4 char diterima; net user /ADD >14 char minta
+          #     konfirmasi (Y/N) -> di runner tanpa stdin pasti gagal.
+          #     Cari batasnya di sini (akun uji langsung dihapus).
+          $boundary = 0
+          foreach ($L in 4, 10, 14, 15, 16, 20) {
+            $s = (('Ab1!' * ([int][Math]::Ceiling($L / 4.0)))).Substring(0, $L)
+            try {
+              New-LocalUser -Name "_pl$L" -Password (ConvertTo-SecureString $s -AsPlainText -Force) | Out-Null
+              Remove-LocalUser -Name "_pl$L"
+              Write-Host "=== DIAG newuser len=$L : OK"
+              $boundary = $L
+            } catch {
+              Write-Host "=== DIAG newuser len=$L : GAGAL $($_.Exception.Message)"
+              Remove-LocalUser -Name "_pl$L" -ErrorAction SilentlyContinue
+              break
+            }
+          }
+          Write-Host "=== DIAG boundary=$boundary (20 = aman s.d. 20 char; 0 = cek manual)"
+          function PwClasses([string]$p) {
             $c = 0
             if ($p -match '[a-z]') { $c++ }
             if ($p -match '[A-Z]') { $c++ }
             if ($p -match '[0-9]') { $c++ }
             if ($p -match '[^A-Za-z0-9]') { $c++ }
-            if ($c -lt 3) { return $false }
-            if ($p -match '[^A-Za-z0-9!@#%^&*_-]') { return $false }
-            if ($p[0] -eq '-' -or $p[0] -eq '/') { return $false }
-            return $true
+            return $c
           }
-          if (-not ($env:RDP_PASSWORD -and (Test-PwStrong $env:RDP_PASSWORD))) {
-            if ($env:RDP_PASSWORD) { Write-Host '::warning::Secret RDP_PASSWORD terlalu lemah atau ada karakter bermasalah -> password acak kuat dipakai (tampil di panel).' }
-            # acak 16 char, PASTI mengandung semua kelas (aman utk policy complexity)
+          function Get-RandomPw([int]$len) {
+            if ($len -lt 8) { return ('Ab1!Q9x').Substring(0, [Math]::Max(4, $len)) }
             $up = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; $lo = 'abcdefghijkmnpqrstuvwxyz'; $nu = '23456789'; $sp = '!@#%^&*-'
             $pool = (($up + $lo + $nu)).ToCharArray()
-            $pw = @($pool | Get-Random -Count 12)
+            $n = $len - 4
+            $pw = @($pool | Get-Random -Count $n)
             $pw += [char][int]($up.ToCharArray() | Get-Random)
             $pw += [char][int]($lo.ToCharArray() | Get-Random)
             $pw += [char][int]($nu.ToCharArray() | Get-Random)
             $pw += [char][int]($sp.ToCharArray() | Get-Random)
-            $first = $pool | Get-Random   # awalan pasti alphanumeric (aman utk net user)
-            $rest  = $pw | Get-Random
-            $pass = $first + (-join $rest)
-          } else {
-            $pass = $env:RDP_PASSWORD
+            return -join ($pw | Sort-Object { Get-Random })
           }
-          # Nama user RDP (default: kall) - dibuat sebagai admin penuh
-          $rdpUser = ($env:RDP_USER -replace '[^A-Za-z0-9\-_]', '').Trim()
-          if (-not $rdpUser) { $rdpUser = 'kall' }
+          # --- Tentukan password final (patuh batas VM, 3+ kelas, karakter aman) ---
+          $maxLen = 16
+          if ($boundary -ge 1) { $maxLen = $boundary }
+          $secret = "$env:RDP_PASSWORD"
+          $secretSafe = ($secret -match '^[A-Za-z0-9!@#%^&*_-]{8,}$') -and ($secret[0] -ne '-' -and $secret[0] -ne '/')
+          if ($secretSafe -and (PwClasses $secret) -ge 3 -and ($secret.Length -le $maxLen)) {
+            $pass = $secret
+            Write-Host "Password: secret RDP_PASSWORD dipakai (len $($pass.Length))"
+          } elseif ($secretSafe -and (PwClasses $secret) -ge 3 -and ($secret.Length -gt $maxLen)) {
+            $prefix = $secret.Substring(0, $maxLen)
+            if ((PwClasses $prefix) -ge 3) {
+              $pass = $prefix
+              Write-Host "::warning::Secret lebih panjang dari batas akun baru ($maxLen char) -> dipakai $maxLen char PERTAMA (password final tampil di panel)."
+            } else {
+              $pass = Get-RandomPw $maxLen
+              Write-Host "::warning::Prefix secret kurang kompleks -> password acak $maxLen char dipakai (tampil di panel)."
+            }
+          } else {
+            if ($secret) { Write-Host '::warning::Secret RDP_PASSWORD lemah/karakter bermasalah -> password acak dipakai (tampil di panel).' }
+            $pass = Get-RandomPw $maxLen
+          }
+          Write-Host "=== DIAG final pass: len=$($pass.Length) chars=$(($pass.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')"
           "RDP_PASS=$pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           "RDP_USER=$rdpUser" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           $secPass = ConvertTo-SecureString -AsPlainText $pass -Force
@@ -128,26 +160,23 @@ jobs:
           if (-not (Get-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue)) {
             Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
           }
-          # Buat user RDP (jika belum ada) + admin tertinggi + boleh login RDP.
-          # CATATAN: policy VM menolak password lemah (complexity) — makanya
-          # $pass dijamin kuat di atas. Buat user TANPA password dulu, baru
-          # set password:
-          #  - user BARU -> 'net user' (API klasik; Set-LocalUser bisa
-          #    InvalidPasswordException utk password pertama akun baru)
-          #  - user LAMA -> Set-LocalUser (terbukti jalan utk runneradmin)
-          # Longgarkan SEMUA batasan password (length + age + history off).
-          # (Bukti log: setelah ini policy = length 1 / age 0 / history none,
-          #  tapi akun baru via New-LocalUser -NoPassword TETAP menolak
-          #  password pertama lewat net user / Set-LocalUser — error 'policy'
-          #  generik. Jadi jalur aman utk akun baru = WinNT provider.)
-          net accounts /MINPWLEN:1 | Out-Null
-          net accounts /MINPWAGE:0 | Out-Null
-          Write-Host "=== DIAG pass: len=$($pass.Length) b64=$([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($pass)))"
-          # --- PROBE: apakah policy complexity aktif di VM ini? (akun uji,
-          #     langsung dihapus; stderrnya normal di log, tidak fatal) ---
-          net user _diagx 'Ab1!' /ADD
-          Write-Host "=== DIAG probe 4-kelas(len 4): exit=$LASTEXITCODE"
-          net user _diagx /delete | Out-Null
+          if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
+            Set-LocalUser -Name $rdpUser -Password $secPass
+            Write-Host "User $rdpUser sudah ada - password via Set-LocalUser"
+          } else {
+            # Akun BARU: password diset LANGSUNG saat create. Akun 'NoPassword'
+            # menolak password pertama via semua API (error 'policy' generik,
+            # terbukti run #36-#40 dgn length/age/history sudah dilonggarkan).
+            New-LocalUser -Name $rdpUser -FullName $rdpUser -Password $secPass
+            Set-LocalUser -Name $rdpUser -PasswordNeverExpires $true
+            Write-Host "User $rdpUser dibuat via New-LocalUser -Password (len $($pass.Length))"
+          }
+          # VERIFIKASI END-TO-END: kredensial $rdpUser benar-benar bisa
+          # authenticate. Kalau gagal = RDP pasti gagal login -> fail fast.
+          net use '\\localhost\ipc$' "/user:$rdpUser" $pass
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::VERIFIKASI KREDENSIAL GAGAL (exit $LASTEXITCODE) - $rdpUser tidak bisa authenticate. Cek log di atas."; exit 1 }
+          Write-Host '=== VERIFIKASI KREDENSIAL: OK (login $rdpUser berhasil) ==='
+          net use '\\localhost\ipc$' /delete
           net user _diagy 'ab12' /ADD
           Write-Host "=== DIAG probe 2-kelas(len 4): exit=$LASTEXITCODE"
           net user _diagy /delete | Out-Null
