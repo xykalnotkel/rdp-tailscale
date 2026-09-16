@@ -135,53 +135,35 @@ jobs:
           #  - user BARU -> 'net user' (API klasik; Set-LocalUser bisa
           #    InvalidPasswordException utk password pertama akun baru)
           #  - user LAMA -> Set-LocalUser (terbukti jalan utk runneradmin)
-          # Longgarkan SEMUA batasan password (length + AGE).
-          # /MINPWAGE:0 penting: akun baru hasil New-LocalUser -NoPassword
-          # punya 'password set' = detik itu juga, dan set password pertama
-          # bisa ditolak karena minimum password age.
+          # Longgarkan SEMUA batasan password (length + age + history off).
+          # (Bukti log: setelah ini policy = length 1 / age 0 / history none,
+          #  tapi akun baru via New-LocalUser -NoPassword TETAP menolak
+          #  password pertama lewat net user / Set-LocalUser — error 'policy'
+          #  generik. Jadi jalur aman utk akun baru = WinNT provider.)
           net accounts /MINPWLEN:1 | Out-Null
           net accounts /MINPWAGE:0 | Out-Null
-          Write-Host '=== DIAG policy VM ==='
-          net accounts
-          Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' | Format-List MinimumPasswordLength, MinimumPasswordAge, MaximumPasswordAge, PasswordHistorySize
-          Write-Host "=== DIAG pass: len=$($pass.Length) matchAman=$($pass -match '^[A-Za-z0-9!@#%^&*_-]+$')"
+          Write-Host "=== DIAG pass: len=$($pass.Length) b64=$([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($pass)))"
           if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
             Set-LocalUser -Name $rdpUser -Password $secPass
+            Write-Host "User $rdpUser sudah ada - password di-set via Set-LocalUser"
           } else {
-            # -NoPassword dan -PasswordNeverExpires ada di parameter set berbeda,
-            # jadi harus dipisah:
-            New-LocalUser -Name $rdpUser -FullName $rdpUser -NoPassword
+            # Akun BARU: buat + set password pertama via WinNT provider (COM).
+            # SetPassword di WinNT menangani 'password pertama' akun baru
+            # dengan benar (New-LocalUser -NoPassword tidak bisa).
+            $comp = [adsi]"WinNT://./,computer"
+            $newU = $comp.Create('user', $rdpUser)
+            $newU.SetPassword($pass)
+            $newU.FullName = $rdpUser
+            $newU.Save()
             Set-LocalUser -Name $rdpUser -PasswordNeverExpires $true
-            # PROBE: password yang sama ke akun sementara — biar log menjawab:
-            # masalah policy/akun baru, atau masalah password-nya?
-            # (stderr diarahkan ke FILE, bukan 2>&1: wrapper runner pakai
-            #  $ErrorActionPreference=Stop sehingga stderr merge bisa fatal)
-            $prErr = Join-Path $env:TEMP 'diagpr.err'
-            net user _diagprobe $pass 2> $prErr
-            Write-Host "=== DIAG probe (akun _diagprobe): exit=$LASTEXITCODE err=$((Get-Content $prErr -ErrorAction SilentlyContinue) -join ' ')"
-            net user _diagprobe /delete 2> $null | Out-Null
-            $ok = $false
-            $nuErr = Join-Path $env:TEMP 'diagnu.err'
-            net user $rdpUser $pass 2> $nuErr
-            if ($LASTEXITCODE -eq 0) { $ok = $true; Write-Host 'net user OK' }
-            else { Write-Host "net user gagal (exit $LASTEXITCODE): $((Get-Content $nuErr -ErrorAction SilentlyContinue) -join ' ')" }
-            if (-not $ok) {
-              # fallback 1: WinNT provider (COM) — password lewat object,
-              # bukan command line (kebal vs quirk parsing argument)
-              try {
-                $ads = [adsi]"WinNT://./$rdpUser,user"
-                $ads.SetPassword($pass)
-                $ok = $true
-                Write-Host 'ADSI SetPassword OK'
-              } catch { Write-Host "ADSI gagal: $($_.Exception.Message)" }
-            }
-            if (-not $ok) {
-              # fallback 2: Set-LocalUser
-              try { Set-LocalUser -Name $rdpUser -Password $secPass; $ok = $true; Write-Host 'Set-LocalUser OK (fallback)' }
-              catch { Write-Host "Set-LocalUser gagal: $($_.Exception.Message)" }
-            }
-            if (-not $ok) { throw 'GAGAL set password utk user RDP (semua metode gagal)' }
+            Write-Host "User $rdpUser dibuat via WinNT (password + NeverExpires OK)"
           }
+          # VERIFIKASI END-TO-END: kredensial $rdpUser benar-benar bisa
+          # authenticate (jangan andalkan 'tidak ada error' saja).
+          net use '\\localhost\ipc$' "/user:$rdpUser" $pass
+          if ($LASTEXITCODE -eq 0) { Write-Host '=== VERIFIKASI KREDENSIAL: OK (login $rdpUser berhasil) ===' }
+          else { Write-Host "::warning::VERIFIKASI KREDENSIAL GAGAL (exit $LASTEXITCODE) - password $rdpUser belum tentu benar!" }
+          net use '\\localhost\ipc$' /delete
           Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $rdpUser -ErrorAction SilentlyContinue
           # Longgarkan batas sesi biar tidak kena error "another connection" 0x5:
