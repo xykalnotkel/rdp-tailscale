@@ -103,7 +103,7 @@ jobs:
           if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
             Set-LocalUser -Name $rdpUser -Password $secPass
           } else {
-            New-LocalUser -Name $rdpUser -FullName $rdpUser -Password $secPass -NeverExpires
+            New-LocalUser -Name $rdpUser -FullName $rdpUser -Password $secPass -PasswordNeverExpires
           }
           Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $rdpUser -ErrorAction SilentlyContinue

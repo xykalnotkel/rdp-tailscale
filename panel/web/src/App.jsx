@@ -218,7 +218,10 @@ export default function App() {
               <Wallpaper wall={wall} setWall={setWall} logLine={logLine} />
             </Card>
             <Card title="Status Panel" icon={I.shield}>
-              <Info cfg={cfg} st={st} />
+              <details>
+                <summary>Detail teknis (cek kalau ada masalah)</summary>
+                <Info cfg={cfg} st={st} />
+              </details>
             </Card>
           </section>
         </div>
@@ -271,8 +274,8 @@ function Hero({ status, st, logLine, cfg }) {
   const labels = { on: 'PC HIDUP', off: 'PC MATI', wait: 'MENGHUBUNGI...', booting: 'BOOTING...', setup: 'SETUP' }
   const subs = {
     on: st && st.state ? 'sisa ' + fmtHM(st.state.remainingSeconds) : '',
-    off: 'tidak ada sesi berjalan', wait: 'menunggu respons server',
-    booting: 'runner GitHub menyala - tunggu 3-6 menit', setup: 'panel butuh konfigurasi'
+    off: 'siap dinyalakan', wait: 'menghubungkan ke server...',
+    booting: 'menyalakan PC, ±4-5 menit', setup: 'panel butuh konfigurasi'
   }
 
   const askPin = () => {
@@ -362,43 +365,50 @@ function Hero({ status, st, logLine, cfg }) {
   const s = st && st.state
   return (
     <div className={'card hero ' + status}>
-      <div className="state-top"><span className="pulse" /><b>{labels[status]}</b><span>{subs[status]}</span></div>
+      <div className="state-top"><span className="pulse" /><b>{labels[status]}</b><span className={status === 'on' ? 'timechip' : ''}>{subs[status]}</span></div>
       {status === 'setup' && (
         <div className="note warn" style={{ marginTop: 8 }}>{(st && st.info) || 'cek env server panel'}</div>
       )}
       {status === 'booting' && (
         <>
-          <div className="big">PC SEDANG BOOTING</div>
-          <div className="sub">Runner GitHub sedang menyala - kredensial akan muncul otomatis begitu sesi siap (3-6 menit). Pantau Log Actions untuk progres step.</div>
+          <div className="big">PC SEDANG DINYALAKAN...</div>
+          <div className="sub">Sedang menyiapkan PC-nya. IP / user / password akan muncul otomatis di sini dalam ±4-5 menit — tidak perlu refresh halaman.</div>
         </>
       )}
       {status === 'off' && (
         <>
           <div className="big">PC MATI</div>
-          <div className="sub">Tekan Mulai untuk menyalakan PC remote. Booting 3-6 menit.</div>
+          <div className="sub">Nyalakan PC-nya, tinggal 3 langkah:</div>
+          <ol className="steps">
+            <li>Tekan <b>Mulai Desktop</b></li>
+            <li>Tunggu ±4-5 menit sampai status jadi <b>PC HIDUP</b></li>
+            <li>Download <b>File .rdp</b> → buka dengan Remote Desktop</li>
+          </ol>
         </>
       )}
       {status === 'wait' && (
         <>
           <div className="big">MENGHUBUNGI...</div>
-          <div className="sub">polling status tiap 10 detik.</div>
+          <div className="sub">Menghubungkan ke server panel, sebentar lagi.</div>
         </>
       )}
       {status === 'on' && s && (
         <>
           <div className="big">{s.machine || 'KALL'} — HIDUP</div>
-          <div className="sub">Remote Desktop siap. Hubungkan ke alamat di bawah (port 3389).</div>
+          <div className="sub">PC siap dipakai. Download file .rdp-nya, lalu connect.</div>
+          <div className="rowbtns">
+            <button className="btn primary xl" onClick={dlRdp}>{I.down} Connect — Download .rdp</button>
+          </div>
           <KRow label="Alamat" v={s.ip || '-'} />
-          <KRow label="Hostname" v={s.dns || '-'} />
           <KRow label="User" v={s.user || 'kall'} />
           <KRow label="Password" v={showPass ? (s.pass || '-') : '••••••••••••••••'}
             extra={<button className="btn ghost mini" onClick={() => setShowPass(!showPass)}>{showPass ? 'Sembunyi' : 'Lihat'}</button>} />
           <div className="rowbtns">
-            <button className="btn primary" onClick={dlRdp}>{I.down} File .rdp</button>
-            <button className="btn" onClick={() => copyText('IP: ' + s.ip + '\nUser: ' + s.user + '\nPass: ' + s.pass).then(() => setErr({ t: 'Info koneksi disalin.', ok: true }))}>Salin info</button>
+            <button className="btn" onClick={() => copyText('IP: ' + s.ip + '\nUser: ' + s.user + '\nPass: ' + s.pass).then(() => setErr({ t: 'Info koneksi disalin.', ok: true }))}>Salin info koneksi</button>
             <button className="btn danger" disabled={busy === 'stop'} onClick={stop}>{busy === 'stop' ? <span className="spin" /> : null} Stop PC</button>
           </div>
-          {s.expiresAt && <div className="hint">sesi berakhir otomatis ±{new Date(s.expiresAt).toLocaleTimeString('id-ID', { hour12: false })}</div>}
+          <div className="hint">Buka file .rdp-nya pakai Remote Desktop (Windows: <b>mstsc</b> / HP: app RDP), lalu login dengan user &amp; password di atas.</div>
+          {s.expiresAt && <div className="hint">Sesi berakhir otomatis ±{new Date(s.expiresAt).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })} WIB</div>}
         </>
       )}
       {(status === 'off' || status === 'wait') && !(st && st.error) && (
@@ -636,24 +646,24 @@ function Config({ cfg, logLine, defaults }) {
       {pinNeeded && <input type="password" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="PIN admin" />}
       <label className="lab">Nama PC</label>
       <input type="text" value={pcName} onChange={(e) => setPcName(e.target.value)} />
-      <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-        <div style={{ flex: 1 }}>
-          <label className="lab">Sistem Operasi</label>
-          <select className="sel" value={osSel} onChange={(e) => setOsSel(e.target.value)}>
-            <option value="Windows">Windows Server</option>
-            <option value="Linux (Ubuntu)">Linux Ubuntu</option>
-          </select>
-        </div>
-        <div style={{ flex: 1 }}>
-          <label className="lab">Mode</label>
-          <select className="sel" value={modeSel} onChange={(e) => setModeSel(e.target.value)}>
-            <option value="Cepat">Cepat</option>
-            <option value="Full">Full</option>
-          </select>
-        </div>
-      </div>
       <details>
-        <summary>Opsi lanjutan</summary>
+        <summary>Opsi sesi (OS / mode / exit node)</summary>
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label className="lab">Sistem Operasi</label>
+            <select className="sel" value={osSel} onChange={(e) => setOsSel(e.target.value)}>
+              <option value="Windows">Windows Server</option>
+              <option value="Linux (Ubuntu)">Linux Ubuntu</option>
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="lab">Mode</label>
+            <select className="sel" value={modeSel} onChange={(e) => setModeSel(e.target.value)}>
+              <option value="Cepat">Cepat (±4 mnt)</option>
+              <option value="Full">Full (+browser dll)</option>
+            </select>
+          </div>
+        </div>
         <label className="lab">Exit Node Tailscale</label>
         <input type="text" value={exitNode} onChange={(e) => setExitNode(e.target.value)} placeholder="xykel / 100.x.x.x" />
         <div className="hint">
