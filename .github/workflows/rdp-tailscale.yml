@@ -496,7 +496,13 @@ jobs:
           $dns = ''
           try { $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch {}
           # Kadaluarsa PERSIS 6 jam dari mulai run (sesuai timeout-minutes: 360)
-          try { $expiry = (Get-Date $env:RUN_STARTED).ToUniversalTime().AddMinutes(360) } catch { $expiry = (Get-Date).ToUniversalTime().AddMinutes(360) }
+          $rs = "$env:RUN_STARTED".Trim()
+          Write-Host "RUN_STARTED=[$rs]"
+          $expiry = $null
+          try {
+            $expiry = ([DateTime]::Parse($rs, [System.Globalization.CultureInfo]::InvariantCulture, [System.DateTimeStyles]::AssumeUniversal)).AddMinutes(360)
+          } catch { Write-Host "::warning::Parse RUN_STARTED gagal: $($_.Exception.Message)" }
+          if (-not $expiry -or $expiry -lt (Get-Date).ToUniversalTime()) { $expiry = (Get-Date).ToUniversalTime().AddMinutes(360) }
           $rdpUser = if ($env:RDP_USER) { $env:RDP_USER } else { 'kall' }
           $payload = [ordered]@{
             v = 1; os = 'Windows'; ip = $ip; dns = $dns; user = $rdpUser
