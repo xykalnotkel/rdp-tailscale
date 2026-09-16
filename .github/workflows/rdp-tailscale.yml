@@ -5,7 +5,7 @@ name: RDP via Tailscale (Windows/Linux)
 #  - OS bisa dipilih: Windows (windows-latest) / Linux Ubuntu (ubuntu-latest)
 #  - PROVISION_MODE: "Cepat" = tanpa install aplikasi (nyala ~4-5 menit),
 #    "Full" = + browser, runtime, taskbar transparan, Lightshot (Windows)
-#  - Password TETAP kalau secret RDP_PASSWORD diisi, acak kalau kosong
+#  - Password TETAP kalau secret RDP_PASSWORD diisi + kuat, acak kalau lemah/kosong
 #  - Login Tailscale otomatis via secret TS_AUTHKEY (fallback klik-link)
 #  - Provision tidak memblokir: kalau gagal/timeout, laporan kredensial
 #    tetap dikirim (continue-on-error) ke runtime/state.json (AES-256)
@@ -85,7 +85,25 @@ jobs:
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
-          if ($env:RDP_PASSWORD) { $pass = $env:RDP_PASSWORD } else {
+          # Password dari secret TETAP dipakai ASALKAN kuat + karakternya aman.
+          # Policy VM menolak password lemah (complexity), dan karakter khusus
+          # tertentu merusak pemanggilan 'net user' / file .rdp. Kalau lemah
+          # atau karakternya berantakan -> acak kuat (tetap tampil di panel
+          # dan di file .rdp, jadi user tetap bisa login).
+          function Test-PwStrong([string]$p) {
+            if ($p.Length -lt 10) { return $false }
+            $c = 0
+            if ($p -match '[a-z]') { $c++ }
+            if ($p -match '[A-Z]') { $c++ }
+            if ($p -match '[0-9]') { $c++ }
+            if ($p -match '[^A-Za-z0-9]') { $c++ }
+            if ($c -lt 3) { return $false }
+            if ($p -match '[^A-Za-z0-9!@#%^&*_-]') { return $false }
+            if ($p[0] -eq '-' -or $p[0] -eq '/') { return $false }
+            return $true
+          }
+          if (-not ($env:RDP_PASSWORD -and (Test-PwStrong $env:RDP_PASSWORD))) {
+            if ($env:RDP_PASSWORD) { Write-Host '::warning::Secret RDP_PASSWORD terlalu lemah atau ada karakter bermasalah -> password acak kuat dipakai (tampil di panel).' }
             # acak 16 char, PASTI mengandung semua kelas (aman utk policy complexity)
             $up = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; $lo = 'abcdefghijkmnpqrstuvwxyz'; $nu = '23456789'; $sp = '!@#%^&*-'
             $pool = (($up + $lo + $nu)).ToCharArray()
@@ -94,7 +112,11 @@ jobs:
             $pw += [char][int]($lo.ToCharArray() | Get-Random)
             $pw += [char][int]($nu.ToCharArray() | Get-Random)
             $pw += [char][int]($sp.ToCharArray() | Get-Random)
-            $pass = -join ($pw | Get-Random)
+            $first = $pool | Get-Random   # awalan pasti alphanumeric (aman utk net user)
+            $rest  = $pw | Get-Random
+            $pass = $first + (-join $rest)
+          } else {
+            $pass = $env:RDP_PASSWORD
           }
           # Nama user RDP (default: kall) - dibuat sebagai admin penuh
           $rdpUser = ($env:RDP_USER -replace '[^A-Za-z0-9\-_]', '').Trim()
@@ -107,10 +129,12 @@ jobs:
             Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
           }
           # Buat user RDP (jika belum ada) + admin tertinggi + boleh login RDP.
-          # CATATAN: policy password VM menolak password sederhana — dan
-          # New-LocalUser memvalidasi complexity sedangkan Set-LocalUser tidak.
-          # Jadi: longgarkan policy + buat user TANPA password, lalu set
-          # password via Set-LocalUser (jalan untuk password user apa pun).
+          # CATATAN: policy VM menolak password lemah (complexity) — makanya
+          # $pass dijamin kuat di atas. Buat user TANPA password dulu, baru
+          # set password:
+          #  - user BARU -> 'net user' (API klasik; Set-LocalUser bisa
+          #    InvalidPasswordException utk password pertama akun baru)
+          #  - user LAMA -> Set-LocalUser (terbukti jalan utk runneradmin)
           net accounts /MINPWLEN:1 | Out-Null
           if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
             Set-LocalUser -Name $rdpUser -Password $secPass
@@ -119,7 +143,11 @@ jobs:
             # jadi harus dipisah:
             New-LocalUser -Name $rdpUser -FullName $rdpUser -NoPassword
             Set-LocalUser -Name $rdpUser -PasswordNeverExpires $true
-            Set-LocalUser -Name $rdpUser -Password $secPass
+            $nuOut = net user $rdpUser $pass
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "net user gagal (exit $LASTEXITCODE): $nuOut - coba Set-LocalUser"
+              Set-LocalUser -Name $rdpUser -Password $secPass
+            }
           }
           Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $rdpUser -ErrorAction SilentlyContinue
