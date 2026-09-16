@@ -152,6 +152,20 @@ jobs:
             if ($secret) { Write-Host '::warning::Secret RDP_PASSWORD lemah/karakter bermasalah -> password acak dipakai (tampil di panel).' }
             $pass = Get-RandomPw $maxLen
           }
+          # ATURAN KOMPLEKSITAS WINDOWS: password TIDAK BOLEH mengandung nama
+          # user (case-insensitive) / bagian nama >2 char. (Bukti run #41:
+          # secret 'Kall#Rdp...' ditolak utk user 'kall', probe tanpa nama OK.)
+          $userLc = $rdpUser.ToLower()
+          if ($pass.ToLower().Contains($userLc)) {
+            $stripped = [regex]::Replace($pass, $userLc, '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($stripped.Length -ge 8 -and (PwClasses $stripped) -ge 3) {
+              $pass = $stripped
+              Write-Host "::warning::Password mengandung nama user '$rdpUser' (Windows menolak) -> kemunculan nama dihapus. Saran: ganti secret RDP_PASSWORD tanpa nama user."
+            } else {
+              do { $pass = Get-RandomPw $maxLen } while ($pass.ToLower().Contains($userLc))
+              Write-Host "::warning::Password mengandung nama user '$rdpUser' -> password acak dipakai (tampil di panel). Saran: ganti secret RDP_PASSWORD tanpa nama user."
+            }
+          }
           Write-Host "=== DIAG final pass: len=$($pass.Length) chars=$(($pass.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')"
           "RDP_PASS=$pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           "RDP_USER=$rdpUser" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
