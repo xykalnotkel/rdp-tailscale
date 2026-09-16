@@ -18,6 +18,13 @@ function Done($ok, $what) {
   if ($ok) { Write-Host "[OK] $what" } else { Write-Host "[XX] $what"; $script:Failures++ }
 }
 
+# tulis DWORD registry (key dibuat otomatis kalau belum ada)
+function Set-RegDWord {
+  param([string]$Path, [string]$Name, [int]$Value)
+  New-Item -Path $Path -Force | Out-Null
+  Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type DWord
+}
+
 # unduh dengan retry + header GH (buat repo private)
 function Get-FileRobust {
   param([string]$Url, [string]$Out, [int]$Tries = 3)
@@ -129,6 +136,57 @@ try {
 } catch { Warn 'auto-login gagal' }
 try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue } catch {}
 Done $true 'runneradmin admin + RDP'
+
+# ============================================================================
+# 4b. RASAIL PC ASLI - biar terasa kayak Windows biasa, bukan "sesi RDP"
+#     - Batas sesi RDP: TIDAK PERNAH (aktif / idle / disconnected)
+#       => RDP di-close tidak memutus apa-apa; buka lagi = desktop sama persis
+#     - Workstation TIDAK PERNAH lock (Win+L mati, tidak ada layar kunci)
+#       => tidak ada lagi "Disconnected" / "Your PC is locked"
+#     - Notifikasi "Your PC is connected via Remote Desktop" dimatikan
+#     - Server Manager tidak auto-open saat logon (tidak terasa kayak server)
+# ============================================================================
+Log '4b. Rasail PC asli (anti-lock, anti-putus, tanpa tanda RDP)'
+try {
+  # --- Batas sesi RDP: semua "Never" (0 = tanpa batas, satuan menit/detik/ms
+  #     tidak masalah karena nilainya nol di semua lokasi) ---
+  Set-RegDWord -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'MaxDisconnectionTime' -Value 0
+  $rdpTcp = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+  foreach ($n in 'MaxConnectionTime', 'MaxIdleTime', 'MaxDisconnectionTime',
+                 'ResetDisconnectLimit', 'DisconnectActiveTimeLimit',
+                 'DisconnectIdleTimeLimit', 'IdleTimeLimit', 'EndSessionTimeLimit') {
+    Set-RegDWord -Path $rdpTcp -Name $n -Value 0
+  }
+  $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+  foreach ($n in 'MaxConnectionTime', 'MaxIdleTime', 'MaxDisconnectionTime') {
+    Set-RegDWord -Path $tsPol -Name $n -Value 0
+  }
+  Set-RegDWord -Path $tsPol -Name 'DisconnectSession'  -Value 1  # jangan putuskan sesi yang idle
+  Set-RegDWord -Path $tsPol -Name 'fResetConnection'   -Value 0  # jangan matikan sesi saat limit tercapai
+  Done $true 'Batas sesi RDP = Never (idle/di-close tidak memutus sesi)'
+
+  # --- Workstation tidak boleh lock -> tidak ada layar kunci sama sekali ---
+  Set-RegDWord -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'DisableLockWorkstation' -Value 1
+  Set-RegDWord -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'DisableLockWorkstation' -Value 1
+  Set-RegDWord -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'InactivityTimeoutSecs' -Value 0
+  Set-RegDWord -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'     -Name 'ScRemoveOption'        -Value 0
+  Done $true 'Lock workstation dimatikan total (Win+L & auto-lock off)'
+
+  # --- Sembunyikan "tanda RDP" ---
+  # Toast "Your PC is connected via Remote Desktop" + notifikasi aplikasi lain.
+  # (Hapus 3 baris ini kalau notifikasi ingin tetap hidup.)
+  Set-RegDWord -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsNotifications' -Name 'NoToastApplicationNotifications' -Value 1
+  # Server Manager tidak auto-open saat logon (biar tidak terasa kayak server)
+  Set-RegDWord -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ServerManager' -Name 'FirstLogonExperience' -Value 0
+  Done $true 'Notifikasi RDP off, Server Manager tidak auto-open'
+
+  # TermService baru dipakai setelah ini (belum ada yang connect) -> restart aman
+  Restart-Service TermService -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 3
+} catch {
+  Warn 'rasail PC asli gagal: ' + $_.Exception.Message
+  Done $false 'rasail PC asli'
+}
 
 # ============================================================================
 # 5. EKSPLORER: This PC + Control Panel di desktop

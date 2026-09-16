@@ -31,6 +31,11 @@ logs, and custom wallpaper uploads. No public IP, no VPS bill, no manual
 - 🖥️ **Two OS options** per session — Windows Server 2022/2025 or Linux Ubuntu (XFCE via xrdp)
 - ⚡ **Cepat / Full modes** — Cepat = RDP-ready in ~4 minutes; Full = + Chrome,
   Firefox, VC++, DirectX, WebView2, TranslucentTB (transparent taskbar), Lightshot
+- 💻 **Rasail PC asli** — feels like a real Windows PC, not an RDP session:
+  closing the RDP client does **not** disconnect the session or lock the
+  desktop (re-open = exactly the same desktop), RDP session time limits are
+  disabled, and the "connected via Remote Desktop" toast + Server Manager
+  auto-open are turned off
 - 🔑 **Your keys, your instance** — GitHub token, Tailscale auth key, and
   panel key are all supplied by you via secrets/env; nothing shared, nothing hardcoded
 - 🔒 **Fixed or random password** — set `RDP_PASSWORD` for a permanent
@@ -146,6 +151,10 @@ LICENSE · SECURITY.md · CONTRIBUTING.md
 - GitHub-hosted runners are meant for CI; treat this as a hobby/free tool.
   For production desktops, run `provision.ps1`/`provision-linux.sh` on your
   own VPS/PC — same result, full control.
+- The Windows provisioning (section 4b in `provision.ps1`) disables **all**
+  toast notifications on the VM (including the RDP connection notification)
+  and locks nothing. Want notifications back? Delete the
+  `NoToastApplicationNotifications` line there.
 - On public repos, Actions logs are public. Never print secrets in workflow
   output (the code already avoids it). See [SECURITY.md](SECURITY.md).
 

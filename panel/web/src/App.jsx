@@ -320,9 +320,40 @@ function Hero({ status, st, logLine, cfg }) {
   const dlRdp = () => {
     const s = st && st.state
     if (!s) return
-    const rdp = ['full address:s:' + (s.ip || ''), 'username:s:' + (s.user || 'runneradmin'), 'prompt for credentials:i:1',
-      'authentication level:i:2', 'screen mode id:i:2', 'desktopwidth:i:1600', 'desktopheight:i:900',
-      'redirectclipboard:i:1', 'drivestoredirect:s:*', 'networkautodetect:i:1'].join('\r\n')
+    // .rdp "rasail PC asli": fullscreen, audio diputar di PC-nya, efek visual
+    // lengkap (wallpaper/animasi/theme), auto-reconnect kalau jaringan blip.
+    // Sisi server sudah dikonfigurasi: sesi tidak lock, tidak putus saat
+    // di-close, tanpa notifikasi "Remote Desktop".
+    const rdp = [
+      'full address:s:' + (s.ip || ''),
+      'username:s:' + (s.user || 'runneradmin'),
+      'prompt for credentials:i:1',
+      'authentication level:i:1',
+      'screen mode id:i:2',
+      'desktopwidth:i:1600',
+      'desktopheight:i:900',
+      'use multimon:i:0',
+      'desktop scaling percentage:i:100',
+      'image resolution:i:96',
+      'redirectclipboard:i:1',
+      'redirectprinters:i:1',
+      'redirectcomports:i:1',
+      'drivestoredirect:s:*',
+      'audiomode:i:0',
+      'disable wallpaper:i:0',
+      'disable full window drag:i:0',
+      'disable menu anim:i:0',
+      'disable theme:i:0',
+      'font smoothing:i:1',
+      'bitmapcachepersistencemodes:i:1',
+      'bitmapcachesize:i:14400',
+      'compression level:i:2',
+      'networkautodetect:i:1',
+      'session reliability:i:1',
+      'autoreconnection enabled:i:1',
+      'autoreconnection max retries:i:1000',
+      'enable windows key:i:1'
+    ].join('\r\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([rdp], { type: 'application/octet-stream' }))
     a.download = 'Kall.rdp'; a.click()
