@@ -86,8 +86,15 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
           if ($env:RDP_PASSWORD) { $pass = $env:RDP_PASSWORD } else {
-            $chars = (48..57) + (65..90) + (97..122)
-            $pass = -join ($chars | Get-Random -Count 16 | ForEach-Object { [char]$_ })
+            # acak 16 char, PASTI mengandung semua kelas (aman utk policy complexity)
+            $up = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; $lo = 'abcdefghijkmnpqrstuvwxyz'; $nu = '23456789'; $sp = '!@#%^&*-'
+            $pool = (($up + $lo + $nu)).ToCharArray()
+            $pw = @($pool | Get-Random -Count 12)
+            $pw += [char][int]($up.ToCharArray() | Get-Random)
+            $pw += [char][int]($lo.ToCharArray() | Get-Random)
+            $pw += [char][int]($nu.ToCharArray() | Get-Random)
+            $pw += [char][int]($sp.ToCharArray() | Get-Random)
+            $pass = -join ($pw | Get-Random)
           }
           # Nama user RDP (default: kall) - dibuat sebagai admin penuh
           $rdpUser = ($env:RDP_USER -replace '[^A-Za-z0-9\-_]', '').Trim()
@@ -99,11 +106,17 @@ jobs:
           if (-not (Get-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue)) {
             Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin'
           }
-          # Buat user RDP (jika belum ada) + admin tertinggi + boleh login RDP
+          # Buat user RDP (jika belum ada) + admin tertinggi + boleh login RDP.
+          # CATATAN: policy password VM menolak password sederhana — dan
+          # New-LocalUser memvalidasi complexity sedangkan Set-LocalUser tidak.
+          # Jadi: longgarkan policy + buat user TANPA password, lalu set
+          # password via Set-LocalUser (jalan untuk password user apa pun).
+          net accounts /MINPWLEN:1 | Out-Null
           if (Get-LocalUser -Name $rdpUser -ErrorAction SilentlyContinue) {
             Set-LocalUser -Name $rdpUser -Password $secPass
           } else {
-            New-LocalUser -Name $rdpUser -FullName $rdpUser -Password $secPass -PasswordNeverExpires
+            New-LocalUser -Name $rdpUser -FullName $rdpUser -NoPassword -PasswordNeverExpires
+            Set-LocalUser -Name $rdpUser -Password $secPass
           }
           Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $rdpUser -ErrorAction SilentlyContinue
