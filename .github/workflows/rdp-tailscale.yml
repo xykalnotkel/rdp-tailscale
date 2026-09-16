@@ -118,7 +118,7 @@ jobs:
             # -NoPassword dan -PasswordNeverExpires ada di parameter set berbeda,
             # jadi harus dipisah:
             New-LocalUser -Name $rdpUser -FullName $rdpUser -NoPassword
-            Set-LocalUser -Name $rdpUser -PasswordNeverExpires
+            Set-LocalUser -Name $rdpUser -PasswordNeverExpires $true
             Set-LocalUser -Name $rdpUser -Password $secPass
           }
           Add-LocalGroupMember -Group 'Administrators' -Member $rdpUser -ErrorAction SilentlyContinue
