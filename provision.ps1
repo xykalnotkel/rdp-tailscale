@@ -1,9 +1,9 @@
 # ============================================================================
 #  provision.ps1 - provisioning Windows (Windows Server 2022 runner)
-#  PROVISION_MODE = Cepat : tanpa install aplikasi (langsung siap ~1-2 mnt)
-#                   Full  : + VC++, DirectX, WebView2, Chrome, Firefox,
-#                           TranslucentTB (taskbar transparan), Lightshot
-#  Semua installer punya watchdog 5 menit -> tidak akan pernah hang.
+#  PROVISION_MODE = Cepat : tanpa install aplikasi berat (langsung siap)
+#                   Full  : + VC++, DirectX, WebView2, Chrome, Firefox, Lightshot
+#  TranslucentTB (taskbar transparan) dipasang di KEDUA mode.
+#  Semua installer silent + /norestart -> tidak perlu restart.
 # ============================================================================
 $ErrorActionPreference = 'Continue'
 $ProgressPreference     = 'SilentlyContinue'
@@ -198,10 +198,103 @@ foreach ($g in @('{20D04FE0-3AEA-1069-A2D8-08002B30309D}','{5399E694-6CE5-4D6C-8
 Done $true 'This PC + Control Panel di desktop'
 
 # ============================================================================
-# 6+ (Mode FULL saja) - runtime, browser, taskbar transparan, Lightshot
+# 6a. TRANSLUCENTTB (KEDUA MODE: Cepat & Full) - taskbar transparan
+#     PENTING: TranslucentTB 2021+ berbasis WinUI 3 (WindowsAppSDK 2.x).
+#     Runtime WinUI 3 BAWAAN di Windows 11, tapi di Windows Server 2022
+#     harus di-install manual (Microsoft.WindowsAppRuntime.2) - inilah
+#     penyebab lama TTB "tidak berfungsi" di VM ini. Selain itu TTB
+#     WAJIB jalan di SESI USER (RDP), bukan di sesi job ini - versi lama
+#     cuma Start-Process di sesi job, jadi taskbar RDP tidak berubah.
+# ============================================================================
+Log '6a. TranslucentTB (taskbar transparan - semua mode)'
+$ttbDir = 'C:\Tools\TranslucentTB'
+$ttbExe = "$ttbDir\TranslucentTB.exe"
+try {
+  # --- 1. Runtime WinUI 3 (WindowsAppSDK 2.x) - hanya kalau belum ada ---
+  $hasRuntime = [bool](Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Microsoft.WindowsAppRuntime.2_*' })
+  if (-not $hasRuntime) {
+    Write-Host '  [i] WindowsAppRuntime.2 belum ada - install runtime (~150 MB)...'
+    $rtZip = "$env:TEMP\wasrt.nupkg"
+    if (Get-FileRobust -Url 'https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.runtime/2.4.0/microsoft.windowsappsdk.runtime.2.4.0.nupkg' -Out $rtZip -Tries 2) {
+      $rtDir = "$env:TEMP\wasrt"
+      New-Item -ItemType Directory -Path $rtDir -Force | Out-Null
+      Expand-Archive -Path $rtZip -DestinationPath $rtDir -Force
+      $msixDir = "$rtDir\tools\MSIX\win10-x64"
+      foreach ($p in 'Microsoft.WindowsAppRuntime.DDLM.2.msix',
+                     'Microsoft.WindowsAppRuntime.Singleton.2.msix',
+                     'Microsoft.WindowsAppRuntime.Main.2.msix',
+                     'Microsoft.WindowsAppRuntime.2.msix') {
+        $full = Join-Path $msixDir $p
+        if (-not (Test-Path $full)) { Warn "MSIX tidak ada: $p"; break }
+        try {
+          Add-AppxPackage -Path $full -DependencyPath $msixDir -AllUsers -ErrorAction Stop
+          Write-Host "  [i] $p terpasang"
+        } catch { Warn "gagal pasang $p : $($_.Exception.Message)" }
+      }
+      Remove-Item $rtZip -Force -ErrorAction SilentlyContinue
+      Remove-Item $rtDir -Recurse -Force -ErrorAction SilentlyContinue
+    } else { Warn 'unduh WindowsAppSDK runtime gagal - TTB kemungkinan tidak jalan' }
+  }
+
+  # --- 2. Unduh + ekstrak TTB portable (versi terbaru) ---
+  if (-not (Test-Path $ttbExe)) {
+    try {
+      $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/TranslucentTB/TranslucentTB/releases/latest' -Headers @{ 'User-Agent' = 'rdp-kall' }
+      $asset = $rel.assets | Where-Object { $_.name -like '*portable-x64*.zip' } | Select-Object -First 1
+      if ($asset -and (Get-FileRobust -Url $asset.browser_download_url -Out "$env:TEMP\ttb.zip")) {
+        New-Item -ItemType Directory -Path $ttbDir -Force | Out-Null
+        Expand-Archive -Path "$env:TEMP\ttb.zip" -DestinationPath $ttbDir -Force
+      }
+      Remove-Item "$env:TEMP\ttb.zip" -Force -ErrorAction SilentlyContinue
+    } catch { Warn 'TranslucentTB gagal diunduh: ' + $_.Exception.Message }
+  }
+
+  if (Test-Path $ttbExe) {
+    # --- 3. Settings: taskbar transparan di SEMUA kondisi ---
+    try {
+      $clean = @{
+        desktop_appearance          = @{ accent = 'clear' }
+        visible_window_appearance   = @{ accent = 'clear' }
+        maximized_window_appearance = @{ accent = 'clear' }
+        start_opened_appearance     = @{ accent = 'clear' }
+        search_opened_appearance    = @{ accent = 'clear' }
+        task_view_opened_appearance = @{ accent = 'clear' }
+        hide_tray                   = $false
+      } | ConvertTo-Json -Depth 5
+      Set-Content -Path "$ttbDir\settings.json" -Value $clean -Encoding Ascii
+    } catch { Warn 'settings.json TTB gagal: ' + $_.Exception.Message }
+
+    # --- 4. Auto-start di SESI USER (RDP) ---
+    #     Run key + scheduled task saat logon (task jalan di sesi yang
+    #     barusan login, termasuk sesi RDP).
+    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'TranslucentTB' -Value "`"$ttbExe`""
+    try {
+      Unregister-ScheduledTask -TaskName 'KallTranslucentTB' -Confirm:$false -ErrorAction SilentlyContinue
+      $ttbAction = New-ScheduledTaskAction -Execute $ttbExe
+      $ttbTrig   = New-ScheduledTaskTrigger -AtLogOn
+      $ttbPrin   = New-ScheduledTaskPrincipal -UserId 'runneradmin' -LogonType Interactive -RunLevel Limited
+      $ttbSet    = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+      Register-ScheduledTask -TaskName 'KallTranslucentTB' -Action $ttbAction -Trigger $ttbTrig -Principal $ttbPrin -Settings $ttbSet -Force | Out-Null
+    } catch { Warn 'scheduled task TTB gagal: ' + $_.Exception.Message }
+    # Kebijakan startup (dari docs TranslucentTB - biar startup task bekerja)
+    $sysPol = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    Set-RegDWord -Path $sysPol -Name 'EnableFullTrustStartupTasks' -Value 2
+    Set-RegDWord -Path $sysPol -Name 'EnableUwpStartupTasks'       -Value 2
+    Set-RegDWord -Path $sysPol -Name 'SupportFullTrustStartupTasks' -Value 1
+    Set-RegDWord -Path $sysPol -Name 'SupportUwpStartupTasks'      -Value 1
+    Done $true 'TranslucentTB terpasang - auto-start saat user login (RDP)'
+  } else { Done $false 'TranslucentTB tidak terpasang (taskbar tetap normal)' }
+} catch {
+  Warn 'section TranslucentTB gagal: ' + $_.Exception.Message
+  Done $false 'TranslucentTB'
+}
+
+# ============================================================================
+# 6. (Mode FULL saja) - runtime, browser, Lightshot
+#    (TranslucentTB sudah ada di 6a, jalan di semua mode)
 # ============================================================================
 if ($script:Mode -eq 'Cepat') {
-  Write-Host '[i] MODE CEPAT - install aplikasi dilewati (Chrome/Firefox/TranslucentTB/Lightshot tidak dipasang)'
+  Write-Host '[i] MODE CEPAT - install aplikasi berat dilewati (Chrome/Firefox/VC++/DirectX/WebView2/Lightshot tidak dipasang)'
 } else {
   Log '6. Mode Full: runtime + browser + tools'
   $dl = "$env:TEMP\dl"
@@ -216,7 +309,7 @@ if ($script:Mode -eq 'Cepat') {
   if ((Get-FileRobust -Url 'https://download.microsoft.com/download/1/7/1/1718ccc4-6315-4d8e-9543-8e28a4e18c4c/dxwebsetup.exe' -Out $dx)) { Invoke-Setup -File $dx -ArgsList @('/Q') -Name 'DirectX' | Out-Null; Done (Test-Path $dx) 'DirectX diproses' }
 
   $wv = "$dl\webview2.exe"
-  if ((Get-FileRobust -Url 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -Out $wv)) { Invoke-Setup -File $wv -ArgsList @('/silent','/install') -Name 'WebView2' | Out-Null; Done (Test-Path $wv) 'WebView2 diproses' }
+  if ((Get-FileRobust -Url 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -Out $wv)) { Invoke-Setup -File $wv -ArgsList @('/silent','/install','/norestart') -Name 'WebView2' | Out-Null; Done (Test-Path $wv) 'WebView2 diproses' }
 
   # Chrome
   $chromePath = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
@@ -242,32 +335,6 @@ if ($script:Mode -eq 'Cepat') {
   }
   Done (Test-Path $ffPath) 'Firefox terinstall'
 
-  # TranslucentTB - taskbar transparan
-  $ttbDir = 'C:\Tools\TranslucentTB'
-  $ttbExe = "$ttbDir\TranslucentTB.exe"
-  if (-not (Test-Path $ttbExe)) {
-    try {
-      $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/TranslucentTB/TranslucentTB/releases/latest' -Headers @{ 'User-Agent' = 'rdp-kall' }
-      $asset = $rel.assets | Where-Object { $_.name -like '*portable-x64*.zip' } | Select-Object -First 1
-      if ($asset) {
-        $zip = "$dl\ttb.zip"
-        if (Get-FileRobust -Url $asset.browser_download_url -Out $zip) {
-          New-Item -ItemType Directory -Path $ttbDir -Force | Out-Null
-          Expand-Archive -Path $zip -DestinationPath $ttbDir -Force
-        }
-      }
-    } catch { Warn 'TranslucentTB gagal diunduh' }
-  }
-  if (Test-Path $ttbExe) {
-    try {
-      $clean = @{ desktop_appearance = @{ accent = 'clear' }; start_opened_appearance = @{ accent = 'clear' }; search_opened_appearance = @{ accent = 'clear' }; task_view_opened_appearance = @{ accent = 'clear' }; hide_tray = $false } | ConvertTo-Json -Depth 5
-      Set-Content -Path "$ttbDir\settings.json" -Value $clean -Encoding Ascii
-    } catch {}
-    Start-Process -FilePath $ttbExe -WorkingDirectory $ttbDir
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'TranslucentTB' -Value "`"$ttbExe`""
-    Done $true 'TranslucentTB aktif (taskbar transparan)'
-  } else { Done $false 'TranslucentTB tidak terpasang' }
-
   # Lightshot
   $lsPath = 'C:\Program Files (x86)\Lightshot\Lightshot.exe'
   if (-not (Test-Path $lsPath)) {
@@ -281,10 +348,22 @@ if ($script:Mode -eq 'Cepat') {
 }
 
 # ============================================================================
-# 7. Optimasi + apply
+# 7. Optimasi + anti-restart + apply
+#    Di runner GitHub, restart VM = sesi RDP hilang (VM ephemeral).
+#    Jadi: semua installer silent+norestart, Windows Update tidak boleh
+#    reboot sendiri, dan Restart/Shutdown disembunyikan dari Start menu.
 # ============================================================================
 try { powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c | Out-Null; Done $true 'Power plan High Performance' } catch { Warn 'power plan default' }
 try { Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord } catch {}
+$wuPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+Set-RegDWord -Path $wuPol -Name 'NoAutoUpdate'                            -Value 1
+Set-RegDWord -Path $wuPol -Name 'AUOptions'                               -Value 2
+Set-RegDWord -Path $wuPol -Name 'NoAutoRebootWithLoggedOnUsers'           -Value 1
+Set-RegDWord -Path $wuPol -Name 'NoAutoRebootWithLoggedOnUsersNoDelay'    -Value 1
+$explAdv = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+Set-RegDWord -Path $explAdv -Name 'Start_ShowRestart'  -Value 0
+Set-RegDWord -Path $explAdv -Name 'Start_ShowShutDown' -Value 0
+Done $true 'Anti-restart aktif (WU auto-reboot off, Restart/Shutdown tersembunyi)'
 & RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters 1, True
 try { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Start-Process explorer; Done $true 'Explorer restart' } catch { Warn 'explorer restart gagal' }
 

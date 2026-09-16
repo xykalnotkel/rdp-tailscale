@@ -314,6 +314,7 @@ jobs:
         env:
           PANEL_KEY: ${{ secrets.PANEL_KEY }}
           GH_TOKEN: ${{ github.token }}
+          RUN_STARTED: ${{ github.run_at }}
         run: |
           $ErrorActionPreference = 'Continue'
           if (-not $env:PANEL_KEY) { Write-Host '::warning::PANEL_KEY belum diset - cek log Actions untuk IP/password.'; exit 0 }
@@ -324,11 +325,13 @@ jobs:
           if ($ip -notmatch '^100\.') { Write-Host '::warning::IP Tailscale belum tersedia - state tidak dikirim.'; exit 0 }
           $dns = ''
           try { $dns = ((& $ts status --json | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch {}
+          # Kadaluarsa PERSIS 6 jam dari mulai run (sesuai timeout-minutes: 360)
+          try { $expiry = (Get-Date $env:RUN_STARTED).ToUniversalTime().AddMinutes(360) } catch { $expiry = (Get-Date).ToUniversalTime().AddMinutes(360) }
           $payload = [ordered]@{
             v = 1; os = 'Windows'; ip = $ip; dns = $dns; user = 'runneradmin'
             pass = $env:RDP_PASS; machine = '${{ github.event.inputs.PC_NAME }}'
             provisionedAt = (Get-Date).ToUniversalTime().ToString('o')
-            expiresAt = (Get-Date).ToUniversalTime().AddMinutes(350).ToString('o')
+            expiresAt = $expiry.ToString('o')
           } | ConvertTo-Json -Compress
           $hex = $env:PANEL_KEY
           $key = New-Object byte[] ($hex.Length / 2)
@@ -367,12 +370,16 @@ jobs:
         env:
           PANEL_KEY: ${{ secrets.PANEL_KEY }}
           GH_TOKEN: ${{ github.token }}
+          RUN_STARTED: ${{ github.run_at }}
         run: |
           set -e
           if [ -z "$PANEL_KEY" ]; then echo '::warning::PANEL_KEY belum diset'; exit 0; fi
           if [ -z "$TS_IP" ]; then echo '::warning::Belum dapat IP Tailscale'; exit 0; fi
           DNS=$(sudo tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || echo "")
-          PAYLOAD="{\"v\":1,\"os\":\"Linux\",\"ip\":\"$TS_IP\",\"dns\":\"$DNS\",\"user\":\"runner\",\"pass\":\"$RDP_PASS\",\"machine\":\"${{ github.event.inputs.PC_NAME }}\",\"provisionedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"expiresAt\":\"$(date -u -d '+350 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+330M +%Y-%m-%dT%H:%M:%SZ)\"}"
+          # Kadaluarsa PERSIS 6 jam dari mulai run (sesuai timeout-minutes: 360)
+          RUN_START_EPOCH=$(date -u -d "$RUN_STARTED" +%s 2>/dev/null || date -u +%s)
+          EXPIRY_UTC=$(date -u -d "@$((RUN_START_EPOCH + 21600))" +%Y-%m-%dT%H:%M:%SZ)
+          PAYLOAD="{\"v\":1,\"os\":\"Linux\",\"ip\":\"$TS_IP\",\"dns\":\"$DNS\",\"user\":\"runner\",\"pass\":\"$RDP_PASS\",\"machine\":\"${{ github.event.inputs.PC_NAME }}\",\"provisionedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"expiresAt\":\"$EXPIRY_UTC\"}"
           IV=$(openssl rand -hex 16)
           IVB64=$(printf '%s' "$IV" | xxd -r -p | base64 -w0)
           CT=$(printf '%s' "$PAYLOAD" | openssl enc -aes-256-cbc -K "$PANEL_KEY" -iv "$IV" -base64 -A)

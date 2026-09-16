@@ -30,12 +30,17 @@ logs, and custom wallpaper uploads. No public IP, no VPS bill, no manual
 
 - 🖥️ **Two OS options** per session — Windows Server 2022/2025 or Linux Ubuntu (XFCE via xrdp)
 - ⚡ **Cepat / Full modes** — Cepat = RDP-ready in ~4 minutes; Full = + Chrome,
-  Firefox, VC++, DirectX, WebView2, TranslucentTB (transparent taskbar), Lightshot
+  Firefox, VC++, DirectX, WebView2, Lightshot
+- 🌫️ **TranslucentTB (transparent taskbar) in BOTH modes** — the WinUI 3
+  runtime (WindowsAppSDK 2.x) is auto-installed first (Server 2022 doesn't
+  ship it — the reason it used to "not work"), and TTB auto-starts inside
+  your RDP session on logon
 - 💻 **Rasail PC asli** — feels like a real Windows PC, not an RDP session:
   closing the RDP client does **not** disconnect the session or lock the
   desktop (re-open = exactly the same desktop), RDP session time limits are
-  disabled, and the "connected via Remote Desktop" toast + Server Manager
-  auto-open are turned off
+  disabled, Windows Update can no longer reboot the VM on its own, and the
+  "connected via Remote Desktop" toast + Server Manager auto-open are turned
+  off. The panel counts down **exactly 6 hours** from run start
 - 🔑 **Your keys, your instance** — GitHub token, Tailscale auth key, and
   panel key are all supplied by you via secrets/env; nothing shared, nothing hardcoded
 - 🔒 **Fixed or random password** — set `RDP_PASSWORD` for a permanent
@@ -155,6 +160,11 @@ LICENSE · SECURITY.md · CONTRIBUTING.md
   toast notifications on the VM (including the RDP connection notification)
   and locks nothing. Want notifications back? Delete the
   `NoToastApplicationNotifications` line there.
+- **No-need-restart design**: every installer is silent + `/norestart`,
+  Windows Update auto-reboot is disabled, and Restart/Shutdown are hidden
+  from the Start menu. Rebooting a GitHub-hosted runner would end the
+  session entirely (the VM is ephemeral) — if you truly need a fresh state,
+  use **Stop** in the panel and start again (~4-5 min).
 - On public repos, Actions logs are public. Never print secrets in workflow
   output (the code already avoids it). See [SECURITY.md](SECURITY.md).
 
